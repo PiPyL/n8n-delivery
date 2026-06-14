@@ -1,0 +1,20 @@
+{
+  "name": "n8n-demo-workflows",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local n8n runner for importing and testing project workflows.",
+  "scripts": {
+    "n8n:start": "scripts/start-n8n.sh",
+    "n8n:start:cloudflare": "scripts/start-with-cloudflare.sh",
+    "n8n:import": "scripts/import-workflows.sh",
+    "n8n:execute:all": "node scripts/execute-workflows.mjs",
+    "test": "npm run test:unit && npm run test:workflows",
+    "test:unit": "node scripts/unit-tests.mjs",
+    "test:workflows": "node scripts/test-workflows.mjs",
+    "test:all": "npm run test:unit && npm run test:workflows",
+    "test:live-api": "node scripts/live-api-smoke.mjs"
+  },
+  "dependencies": {
+    "n8n": "2.23.2"
+  }
+}

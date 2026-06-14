@@ -1,0 +1,346 @@
+{
+  "id": "wf14calendar",
+  "name": "14_Calendar_Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "events": "workflow_call",
+        "inputSource": "jsonExample"
+      },
+      "id": "wf14-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\n// AI Agent (LangChain toolWorkflow) truyen input duoi nhieu dang (copy pattern ST-013):\n//  1. { user_message: \"...\", chat_id: 123 }\n//  2. { params: { user_message, chat_id } }\n//  3. { text: \"...\" }\n//  4. { message: \"...\" }\n//  5. { query: \"...\" }\n//  6. \"<plain string>\"\n//  7. {} (empty)\nconst candidates = [input, input.params || {}, input.input || {}, input.data || {}];\nlet userMessage = '';\nlet chatId = '';\n\nfor (const obj of candidates) {\n  if (!obj || typeof obj !== 'object') continue;\n  userMessage = userMessage\n    || obj.user_message\n    || obj.text\n    || obj.message\n    || obj.query\n    || obj.content\n    || obj.input\n    || '';\n  chatId = chatId\n    || obj.chat_id\n    || obj.chatId\n    || obj.chat_id_str\n    || '';\n}\n\nif (!userMessage && typeof input === 'string') {\n  userMessage = input;\n}\nif (!userMessage && input.json && typeof input.json === 'string') {\n  userMessage = input.json;\n}\n\n// NEW: Try to parse userMessage as JSON if it is a JSON string\nlet parsedJson = null;\nif (typeof userMessage === 'string' && userMessage.trim().startsWith('{')) {\n  try {\n    parsedJson = JSON.parse(userMessage);\n  } catch (e) {\n    // Ignore parse error\n  }\n}\n\nif (parsedJson && typeof parsedJson === 'object') {\n  userMessage = parsedJson.user_message || parsedJson.text || parsedJson.message || parsedJson.query || userMessage;\n  chatId = chatId || parsedJson.chat_id || parsedJson.chatId || parsedJson.chat_id_str || '';\n}\n\nif (!chatId || String(chatId).trim() === '') {\n  return [];\n}\n\nconst trimmed = String(userMessage || '').trim();\nconst isEmpty = trimmed.length === 0;\n\nreturn [{\n  json: {\n    user_message: trimmed,\n    chat_id: String(chatId || ''),\n    session_id: input.session_id || (input.params && input.params.session_id) || '',\n    is_empty_input: isEmpty,\n  }\n}];"
+      },
+      "id": "wf14-extract",
+      "name": "Extract Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-empty",
+              "leftValue": "={{ $json.is_empty_input }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "wf14-if-empty",
+      "name": "If Empty Input",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const extract = $('Extract Input').first().json;\n\n// Fail-closed: khong co chat_id thi return [] de workflow ket thuc, khong goi Telegram\nif (!extract.chat_id || String(extract.chat_id).trim() === '') {\n  return [];\n}\n\nreturn [{\n  json: {\n    success: false,\n    status: 'empty_input',\n    chat_id: extract.chat_id,\n    text: '🤔 *Bạn muốn đặt lịch hẹn nào?*\\n\\nMình giúp tạo sự kiện trên Google Calendar. Bạn nói rõ:\\n• *Tiêu đề* (vd: họp team, gặp khách)\\n• *Thời gian* (vd: 10h sáng mai, 14h chiều thứ 6 tuần sau)\\n• *Địa điểm*, *mô tả* (nếu có)\\n\\nVí dụ: \"Đặt lịch họp team từ 10h đến 11h ngày mai, tại phòng họp A\"'\n  }\n}];"
+      },
+      "id": "wf14-empty-reply",
+      "name": "Empty Input Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  contents: [{\n    parts: [{\n      text: \"Bạn là trợ lý trích xuất thông tin sự kiện Google Calendar từ yêu cầu tiếng Việt tự nhiên của admin.\\n\\nMúi giờ: Asia/Ho_Chi_Minh (UTC+7).\\nHôm nay: \" + new Date().toLocaleString('vi-VN', {timeZone: 'Asia/Ho_Chi_Minh', weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'}) + \".\\n\\nYêu cầu: \\\"\" + $json.user_message + \"\\\"\\n\\nHãy trích xuất các trường sau (string, để trống nếu không rõ):\\n- title: Tiêu đề sự kiện.\\n- start: ISO 8601 với offset +07:00, vd '2026-06-14T10:00:00+07:00'. Tính từ 'mai'/'hôm nay'/'thứ 6 tuần sau'...\\n- end: ISO 8601 +07:00. Mặc định = start + 1 giờ nếu user không nói rõ.\\n- description: Mô tả thêm (nếu có).\\n- location: Địa điểm (nếu có).\\n\\nQuy tắc:\\n- Luôn dùng offset +07:00.\\n- Nếu user không cho biết thời gian → để trống start, end.\\n- 'ngày mai' = hôm nay + 1 ngày; 'tuần sau' = +7 ngày.\\n- Trả về JSON hợp lệ.\"\n    }]\n  }],\n  generationConfig: {\n    responseMimeType: 'application/json',\n    responseSchema: {\n      type: 'object',\n      properties: {\n        title: {type: 'string'},\n        start: {type: 'string'},\n        end: {type: 'string'},\n        description: {type: 'string'},\n        location: {type: 'string'}\n      }\n    }\n  }\n}) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "wf14-gemini",
+      "name": "Gemini Extract Fields",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        860,
+        400
+      ],
+      "settings": {
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 5000
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst validate = $('Extract Input').first().json;\n\nlet fields;\ntry {\n  const text = input.candidates[0].content.parts[0].text;\n  fields = JSON.parse(text);\n} catch (e) {\n  fields = { title: '', start: '', end: '', description: '', location: '' };\n}\n\nfunction ensureTimezone(isoStr, defaultTime = '') {\n  if (!isoStr) return '';\n  let s = String(isoStr).trim();\n  if (!s) return '';\n  if (/^\\d{4}-\\d{2}-\\d{2}$/.test(s)) {\n    s = s + (defaultTime ? 'T' + defaultTime : 'T00:00:00');\n  }\n  if (/[Zz]$|[+-]\\d{2}:?\\d{2}$/.test(s)) return s;\n  if (/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?$/.test(s)) return s + '+07:00';\n  return s;\n}\n\nconst title = String(fields.title || '').trim();\nlet start = ensureTimezone(fields.start, '09:00:00');\nlet end = ensureTimezone(fields.end);\n\nif (start && !end) {\n  const startDate = new Date(start);\n  if (!isNaN(startDate.getTime())) {\n    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);\n    const localTime = new Date(endDate.getTime() + 7 * 60 * 60 * 1000);\n    end = localTime.toISOString().slice(0, 19) + '+07:00';\n  }\n}\n\nconst description = String(fields.description || '').trim();\nconst location = String(fields.location || '').trim();\n\nconst missing = [];\nif (!title) missing.push('title (tiêu đề)');\nif (!start) missing.push('start (thời gian bắt đầu)');\nif (!end) missing.push('end (thời gian kết thúc)');\n\nlet endAfterStart = true;\nif (start && end) {\n  const startDate = new Date(start);\n  const endDate = new Date(end);\n  if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {\n    missing.push('start/end không phải ISO 8601 hợp lệ');\n    endAfterStart = false;\n  } else if (endDate <= startDate) {\n    missing.push('end phải sau start');\n    endAfterStart = false;\n  }\n}\n\nreturn [{\n  json: {\n    valid: missing.length === 0 && endAfterStart,\n    missing: missing,\n    chat_id: validate.chat_id,\n    user_message: validate.user_message,\n    title: title,\n    start: start,\n    end: end,\n    description: description,\n    location: location,\n  }\n}];"
+      },
+      "id": "wf14-validate",
+      "name": "Validate Required Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "wf14-if-valid",
+      "name": "If Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "create",
+        "calendar": {
+          "__rl": true,
+          "mode": "name",
+          "value": "primary"
+        },
+        "start": "={{ $json.start }}",
+        "end": "={{ $json.end }}",
+        "useDefaultReminders": true,
+        "additionalFields": {
+          "summary": "={{ $json.title }}",
+          "description": "={{ $json.description }}",
+          "location": "={{ $json.location }}"
+        }
+      },
+      "id": "wf14-create",
+      "name": "Create Event (Google Calendar)",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1,
+      "position": [
+        1520,
+        200
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "OwwGxyeK5fUpUSRk",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst validate = $('Validate Required Fields').first().json;\n\nfunction fmtVN(isoStr) {\n  try {\n    const d = new Date(isoStr);\n    return d.toLocaleString('vi-VN', {\n      timeZone: 'Asia/Ho_Chi_Minh',\n      weekday: 'short',\n      day: '2-digit',\n      month: '2-digit',\n      year: 'numeric',\n      hour: '2-digit',\n      minute: '2-digit'\n    });\n  } catch (e) {\n    return isoStr;\n  }\n}\n\nconst summary = input.summary || validate.title;\nconst start = input.start?.dateTime || validate.start;\nconst end = input.end?.dateTime || validate.end;\nconst location = input.location || validate.location;\nconst description = input.description || validate.description;\n\nlet text = `✅ *Đã tạo lịch hẹn thành công!*\\n\\n📅 *${summary}*\\n🕐 Bắt đầu: ${fmtVN(start)}\\n🕐 Kết thúc: ${fmtVN(end)}`;\nif (location) text += `\\n📍 Địa điểm: ${location}`;\nif (description) text += `\\n📝 Mô tả: ${description}`;\ntext += `\\n🔗 ${input.htmlLink || '(xem trong Google Calendar)'}`;\n\nreturn [{\n  json: {\n    success: true,\n    status: 'success',\n    chat_id: validate.chat_id,\n    text: text\n  }\n}];"
+      },
+      "id": "wf14-success-reply",
+      "name": "Prepare Success Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1740,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nconst missing = input.missing || [];\nconst text = `⚠️ *Thiếu thông tin để tạo lịch hẹn*\\n\\nMình cần thêm:\\n${missing.map(f => '• ' + f).join('\\n')}\\n\\nVí dụ câu đầy đủ:\\n\"Đặt lịch họp team từ 10h đến 11h ngày mai, tại phòng họp A\"\\n\\nBạn nói rõ giúp mình nhé!`;\n\nreturn [{\n  json: {\n    success: false,\n    status: 'missing_info',\n    missing: missing,\n    chat_id: input.chat_id,\n    text: text\n  }\n}];"
+      },
+      "id": "wf14-missing-reply",
+      "name": "Prepare Missing Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        600
+      ]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Input": {
+      "main": [
+        [
+          {
+            "node": "If Empty Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Empty Input": {
+      "main": [
+        [
+          {
+            "node": "Empty Input Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini Extract Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Empty Input Reply": {
+      "main": [
+        []
+      ]
+    },
+    "Gemini Extract Fields": {
+      "main": [
+        [
+          {
+            "node": "Validate Required Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Required Fields": {
+      "main": [
+        [
+          {
+            "node": "If Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Valid": {
+      "main": [
+        [
+          {
+            "node": "Create Event (Google Calendar)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Missing Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Event (Google Calendar)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Success Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Success Reply": {
+      "main": [
+        []
+      ]
+    },
+    "Prepare Missing Reply": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "calendar"
+    },
+    {
+      "name": "telegram"
+    },
+    {
+      "name": "sub-workflow"
+    }
+  ],
+  "meta": {
+    "description": "Sub-workflow cho AI Agent wf1: tạo sự kiện Google Calendar từ yêu cầu tiếng Việt tự nhiên. CREATE-only (READ/DELETE out of scope)."
+  }
+}

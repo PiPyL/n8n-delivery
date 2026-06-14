@@ -1,0 +1,483 @@
+{
+  "name": "02_Facebook_Gateway",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "fb-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "2f0ecfea-56fa-47f1-b673-4b8b6f0801ba",
+      "name": "Facebook Verify Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        120,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const query = $input.first().json.query || {};\nconst expectedToken = $env.FACEBOOK_WEBHOOK_VERIFY_TOKEN || 'CONFIG_FACEBOOK_WEBHOOK_VERIFY_TOKEN';\nconst mode = query['hub.mode'];\nconst token = query['hub.verify_token'];\nconst challenge = query['hub.challenge'];\n\nif (mode === 'subscribe' && token === expectedToken && challenge) {\n  return [{ json: { response: challenge, code: 200 } }];\n}\n\nreturn [{ json: { response: 'Forbidden', code: 403 } }];"
+      },
+      "id": "c9648181-61ec-4726-90dd-c545d3fb1a1b",
+      "name": "Verify Meta Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        360,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.response }}",
+        "options": {
+          "responseCode": "={{ $json.code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain"
+              }
+            ]
+          }
+        }
+      },
+      "id": "a827473f-58ff-43b7-b405-d245d8f0be66",
+      "name": "Respond Verify Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        600,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fb-webhook",
+        "responseMode": "onReceived",
+        "responseCode": 200,
+        "options": {}
+      },
+      "id": "f5a6b7c8-d9e0-1f2a-3b4c-5d6e7f8a9b0c",
+      "name": "Facebook Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        120,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst result = [];\n\nlet staticData = {};\ntry {\n  const fs = require('fs');\n  const path = require('path');\n  const filePath = path.join($env.N8N_USER_FOLDER || './.n8n', 'processed_facebook_ids.json');\n  if (fs.existsSync(filePath)) {\n    staticData = JSON.parse(fs.readFileSync(filePath, 'utf8'));\n  }\n} catch (e) {\n  staticData = $getWorkflowStaticData('global');\n}\nstaticData.processedIds = staticData.processedIds || [];\n\nfunction saveStaticData(data) {\n  try {\n    const fs = require('fs');\n    const path = require('path');\n    const filePath = path.join($env.N8N_USER_FOLDER || './.n8n', 'processed_facebook_ids.json');\n    fs.mkdirSync(path.dirname(filePath), { recursive: true });\n    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');\n  } catch (e) {\n    // fallback\n  }\n}\n\nif (staticData.processedIds.length > 200) {\n  staticData.processedIds = staticData.processedIds.slice(-100);\n}\n\nfor (const item of items) {\n  const body = item.json.body;\n  const entries = body?.entry || [];\n\n  for (const entry of entries) {\n    for (const msg of entry.messaging || []) {\n      const msgId = msg.message?.mid;\n      const senderId = msg.sender?.id;\n      const text = msg.message?.text;\n      if (!msgId || !senderId || !text || staticData.processedIds.includes(msgId)) continue;\n      staticData.processedIds.push(msgId);\n      result.push({ json: { source: 'messenger', senderId, text, eventId: msgId } });\n    }\n\n    for (const changeItem of entry.changes || []) {\n      const change = changeItem.value || {};\n      const commentId = change.comment_id || change.id;\n      const text = change.message;\n      const senderId = change.from?.id;\n      if (change.item !== 'comment' || change.verb !== 'add' || !commentId || !text || staticData.processedIds.includes(commentId)) continue;\n      staticData.processedIds.push(commentId);\n      result.push({ json: { source: 'comment', commentId, senderId, text, eventId: commentId } });\n    }\n  }\n}\n\nsaveStaticData(staticData);\nreturn result;"
+      },
+      "id": "e4d5c6b7-a8f9-0e1f-2a3b-4c5d6e7f8a9b",
+      "name": "Deduplication & Parse",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        360,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Khách hàng nhắn tin: \"{{ $json.text }}\". Hãy trả lời tư vấn cho khách hàng dựa trên kịch bản bán hàng và thông tin sản phẩm.",
+        "hasSystemMessage": true,
+        "systemMessage": "Bạn là nhân viên tư vấn bán hàng của Fanpage. Trả lời thân thiện, ngắn gọn, xúc tích bằng tiếng Việt. Nếu khách để lại số điện thoại, địa chỉ, sản phẩm hoặc nói chốt đơn/mua hàng/đặt hàng, vẫn trả lời bình thường nhưng không tự bịa thông tin còn thiếu. KHI KHÁCH HỎI VỀ SẢN PHẨM CỤ THỂ (mã sản phẩm dạng VDxx kèm variation như den, trang, xanh): gọi tool 'Product Image Lookup' với input {user_message, chat_id, source: 'comment' hoặc 'messenger'} để lấy ảnh mẫu từ Google Drive. Sau khi có ảnh, trả lời text ngắn gọn VÀ nhắc tới ảnh ('Xem ảnh đính kèm bên dưới'). Nếu tool trả về found=false, xin lỗi khách và hỏi lại mã sản phẩm."
+      },
+      "id": "c7b8a9d0-e5f4-3a2b-1c0d-9e8f7a6b5c4d",
+      "name": "AI Agent (Sales Consultant)",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1,
+      "position": [
+        600,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "b1a2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+      "name": "Gemini 3.5 Flash",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        520,
+        520
+      ],
+      "credentials": {
+        "googleApiKey": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "d7c8b9a0-f1e2-3d4c-5b6a-7f8e9d0c1b2a",
+      "name": "Window Buffer Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $node['Deduplication & Parse'].json.source;\nconst text = $node['Deduplication & Parse'].json.text || '';\nconst output = $json.output || $json.text || '';\nconst lower = text.toLowerCase();\nconst isDeal = /(chốt|chot|đặt|dat|mua|order|sđt|sdt|số điện thoại|so dien thoai|địa chỉ|dia chi)/i.test(lower);\nconst phone = (text.match(/(\\+?84|0)\\d{8,10}/) || [])[0] || '';\nconst product = (text.match(/(?:mua|đặt|dat|order|chốt|chot)\\s+([^,.;\\n]+)/i) || [])[1]?.trim() || '';\nconst address = (text.match(/(?:địa chỉ|dia chi|ship tới|giao tới)[:\\s]+([^\\n]+)/i) || [])[1]?.trim() || '';\n\n// Try to pull image_urls from tool output if AI Agent called Product Image Lookup tool.\nconst toolResp = $json.tool_response || $json.toolResponse || $json.image_urls || null;\nlet imageUrls = [];\nif (Array.isArray(toolResp)) imageUrls = toolResp;\nelse if (toolResp && Array.isArray(toolResp.image_urls)) imageUrls = toolResp.image_urls;\nelse if (toolResp && Array.isArray(toolResp.files)) imageUrls = toolResp.files;\n\nconst primaryUrl = imageUrls.length > 0\n  ? (imageUrls[0].url || imageUrls[0].webViewLink || imageUrls[0])\n  : null;\n\nreturn [{\n  json: {\n    source,\n    senderId: $node['Deduplication & Parse'].json.senderId,\n    commentId: $node['Deduplication & Parse'].json.commentId,\n    eventId: $node['Deduplication & Parse'].json.eventId,\n    text,\n    ai_reply: output,\n    is_deal: isDeal,\n    customer_name: '',\n    phone,\n    address,\n    product,\n    image_urls: imageUrls,\n    primary_image_url: typeof primaryUrl === 'string' ? primaryUrl : (primaryUrl && primaryUrl.url) || null,\n    has_image: !!primaryUrl,\n    captured_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "68c340b0-8c3e-4cb0-bf6e-f3ef3a08fb15",
+      "name": "Prepare Reply and Deal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.source }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "messenger",
+              "output": 1
+            },
+            {
+              "value2": "comment",
+              "output": 2
+            }
+          ]
+        },
+        "fallbackOutput": 0
+      },
+      "id": "f2e3d4c5-b6a7-8f9e-0d1c-2b3a4f5e6d7c",
+      "name": "Check Source",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/me/messages",
+        "sendHeaders": true,
+        "headers": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "={{ $env.FACEBOOK_PAGE_ACCESS_TOKEN || 'CONFIG_FACEBOOK_PAGE_ACCESS_TOKEN' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={\n  \"recipient\": {\n    \"id\": \"{{ $json.senderId }}\"\n  },\n  \"message\": {\n    \"text\": \"{{ $json.ai_reply }}\"\n  }\n}",
+        "options": {},
+        "sendQuery": true,
+        "specifyBody": "json"
+      },
+      "id": "e4f5a6b7-c8d9-0e1f-2a3b-4c5d6e7f8a9b",
+      "name": "Send Messenger API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1320,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $json.commentId }}/comments",
+        "sendHeaders": true,
+        "headers": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "={{ $env.FACEBOOK_PAGE_ACCESS_TOKEN || 'CONFIG_FACEBOOK_PAGE_ACCESS_TOKEN' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={\\n  \\\"message\\\": \\\"{{ $json.ai_reply }}\\\"{{ $json.has_image ? ',\\n  \"attachment_url\": \"{{ $json.primary_image_url }}\"' : '' }}\\n}",
+        "options": {},
+        "sendQuery": true,
+        "specifyBody": "json"
+      },
+      "id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+      "name": "Reply Comment API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1320,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_deal }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "5dd206fe-690f-477f-87ce-0d6b199d9f1b",
+      "name": "Is Deal Captured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID || 'CONFIG_GOOGLE_SHEETS_DOCUMENT_ID' }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $env.GOOGLE_ORDERS_SHEET_NAME || 'DonHang' }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Nguồn": "Facebook Page",
+            "Tên Khách Hàng": "={{ $json.customer_name }}",
+            "Số Điện Thoại": "={{ $json.phone }}",
+            "Địa Chỉ": "={{ $json.address }}",
+            "Sản Phẩm": "={{ $json.product }}",
+            "Nội Dung": "={{ $json.text }}",
+            "Thời Gian": "={{ $json.captured_at }}"
+          },
+          "matchingColumns": []
+        },
+        "options": {}
+      },
+      "id": "e9ee717d-3642-4aad-918a-e908f257ee56",
+      "name": "Save Facebook Order Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1320,
+        520
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "15_Product_Image_Lookup",
+          "mode": "name"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "user_message": "={{ $json.text }}",
+            "chat_id": "={{ $node['Deduplication & Parse'].json.senderId }}",
+            "source": "={{ $node['Deduplication & Parse'].json.source }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "wf15-tool-node-aaaa-bbbb-cccc-dddddddddddd",
+      "name": "Tool: Product Image Lookup",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1,
+      "position": [
+        720,
+        660
+      ]
+    }
+  ],
+  "connections": {
+    "Facebook Verify Trigger": {
+      "main": [
+        [
+          {
+            "node": "Verify Meta Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Meta Token": {
+      "main": [
+        [
+          {
+            "node": "Respond Verify Challenge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facebook Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Deduplication & Parse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deduplication & Parse": {
+      "main": [
+        [
+          {
+            "node": "AI Agent (Sales Consultant)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini 3.5 Flash": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent (Sales Consultant)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window Buffer Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent (Sales Consultant)",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent (Sales Consultant)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Reply and Deal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Reply and Deal": {
+      "main": [
+        [
+          {
+            "node": "Check Source",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is Deal Captured?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Source": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Send Messenger API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply Comment API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Deal Captured?": {
+      "main": [
+        [
+          {
+            "node": "Save Facebook Order Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Tool: Product Image Lookup": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent (Sales Consultant)",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

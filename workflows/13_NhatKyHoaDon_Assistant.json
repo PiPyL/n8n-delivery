@@ -1,0 +1,723 @@
+{
+  "id": "wf13nhatkyass",
+  "name": "13_NhatKyHoaDon_Assistant",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "wf13-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\n// AI Agent (LangChain toolWorkflow) truyen input duoi nhieu dang:\n//  1. { user_message: \"...\", chat_id: 123 }\n//  2. { params: { user_message, chat_id } } (wrapper tu agent node)\n//  3. { text: \"...\" } (fallback Telegram text field)\n//  4. { message: \"...\"\" } (một số tool agent dùng)\n//  5. { query: \"...\" } (RAG-style tool input / LangChain DynamicTool schema transform)\n//  6. { query: \"<JSON string>\" } (khi LLM goi tool voi object khong match schema, n8n wrap input.json={} nhung query co the chua JSON)\n//  7. { input: \"...\" } (LangChain Tool.call wrap)\n//  8. \"<plain string>\" (truong hop cuc bien)\n//  9. {} (empty - khi agent goi nham tool hoac args khong match DynamicTool schema)\n//\n// Muc tieu: parse duoc nhieu nhat, fallback an toan (khong throw).\nconst candidates = [input, input.params || {}, input.input || {}, input.data || {}];\nlet userMessage = '';\nlet chatId = '';\n\nconst isPlausibleText = (s) => typeof s === 'string' && s.trim().length > 0;\n\nfor (const obj of candidates) {\n  if (!obj || typeof obj !== 'object') continue;\n\n  // Parse query: neu la JSON string chua cac field quen thuoc (user_message, input, chat_id)\n  if (isPlausibleText(obj.query)) {\n    try {\n      const parsed = JSON.parse(obj.query);\n      if (parsed && typeof parsed === 'object') {\n        userMessage = userMessage\n          || parsed.user_message\n          || parsed.input\n          || parsed.text\n          || parsed.message\n          || parsed.content\n          || '';\n        chatId = chatId\n          || parsed.chat_id\n          || parsed.chatId\n          || '';\n        continue; // da parse thanh object, khong fallback sang raw string\n      }\n    } catch (e) {\n      // khong phai JSON string, fallback xu ly nhu text thuong\n    }\n  }\n\n  userMessage = userMessage\n    || obj.user_message\n    || obj.text\n    || obj.message\n    || obj.query\n    || obj.content\n    || obj.input\n    || '';\n  chatId = chatId\n    || obj.chat_id\n    || obj.chatId\n    || obj.chat_id_str\n    || '';\n}\n\n// Fallback neu toan bo input la string\nif (!userMessage && typeof input === 'string') {\n  userMessage = input;\n}\n\n// Fallback neu AI Agent truyen string trong field khac\nif (!userMessage && input.json && typeof input.json === 'string') {\n  userMessage = input.json;\n}\n\nconst trimmed = String(userMessage || '').trim();\nconst isEmpty = trimmed.length === 0;\n\n// Defense-in-depth: khi AI Agent LangChain tool goi sub-workflow chi voi field `query`\n// (khong co chat_id o bat ky candidate nao), fallback ve env admin de van co the\n// reply Telegram cho admin. Workflow nay chi danh cho admin (1 chat_id).\nconst envChatId = String($env.ADMIN_TELEGRAM_CHAT_ID || '').trim();\nif (!chatId && envChatId) {\n  chatId = envChatId;\n}\n\nreturn [{\n  json: {\n    user_message: trimmed,\n    chat_id: String(chatId || ''),\n    session_id: input.session_id || (input.params && input.params.session_id) || '',\n    is_empty_input: isEmpty,\n  }\n}];\n"
+      },
+      "id": "wf13-extract",
+      "name": "Extract Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  contents: [{\n    parts: [{\n      text: \"Bạn là bộ phân loại intent cho 1 hệ thống quản lý nhật ký hóa đơn cho thuê sản phẩm thời trang (váy đầm, mã VDxx).\\n\\nYêu cầu của admin: \\\"\" + $json.user_message + \"\\\"\\n\\nHãy phân loại thành 1 trong 2 hành động:\\n- READ: Khi admin muốn xem, hỏi, tra cứu, lọc, đếm, tìm kiếm thông tin về các đơn đã có trong sheet Nhật ký hóa đơn.\\n- WRITE: Khi admin muốn THÊM MỚI 1 dòng đơn hàng/cho thuê vào sheet.\\n\\nNgoài ra, hãy trích xuất thêm:\\n- filter: Nếu có lọc theo tên khách, SĐT, mã SP, hay từ khóa, hãy trích xuất CHỈ từ khóa thô (vd: \\\"NGUYỄN THỊ A\\\" thay vì \\\"khach NGUYEN THI A\\\", \\\"VD01\\\" thay vì \\\"ma VD01\\\"). Null nếu không lọc.\\n- sheet_name: Mặc định \\\"Nhật ký hóa đơn\\\" (tab duy nhất của file).\\n\\nQuy tắc: Nếu không chắc chắn giữa READ và WRITE, mặc định chọn READ.\\n\\nTrả về JSON hợp lệ.\"\n    }]\n  }],\n  generationConfig: {\n    responseMimeType: \"application/json\",\n    responseSchema: {\n      type: \"object\",\n      properties: {\n        action: {type: \"string\", enum: [\"READ\", \"WRITE\"]},\n        filter: {type: \"string\"},\n        sheet_name: {type: \"string\"}\n      },\n      required: [\"action\"]\n    }\n  }\n}) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "wf13-intent",
+      "name": "Gemini Intent Classifier",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst extract = $('Extract Input').first().json;\nlet intentData;\ntry {\n  const text = input.candidates[0].content.parts[0].text;\n  intentData = JSON.parse(text);\n} catch (e) {\n  // Fallback: default READ nếu parse lỗi\n  intentData = { action: 'READ', filter: null, sheet_name: 'Nhật ký hóa đơn' };\n}\n\nconst action = (intentData.action || 'READ').toUpperCase();\nconst validActions = ['READ', 'WRITE'];\nconst finalAction = validActions.includes(action) ? action : 'READ';\n\nreturn [{\n  json: {\n    user_message: extract.user_message,\n    chat_id: extract.chat_id,\n    action: finalAction,\n    filter: intentData.filter || null,\n    sheet_name: intentData.sheet_name || 'Nhật ký hóa đơn',\n    raw_intent: intentData,\n  }\n}];"
+      },
+      "id": "wf13-parse-intent",
+      "name": "Parse Intent + Guards",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "READ",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "read"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "WRITE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "write"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf13-switch",
+      "name": "Switch Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID || 'CONFIG_GOOGLE_SHEETS_DOCUMENT_ID' }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Parse Intent + Guards').item.json.sheet_name || 'Nhật ký hóa đơn' }}"
+        },
+        "options": {}
+      },
+      "id": "wf13-read-range",
+      "name": "Read Range",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        1520,
+        100
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "gcgn9fUriMr0ZO6s",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst intentData = $('Parse Intent + Guards').first().json;\n\nlet filterVal = String(intentData.filter || '').trim().toLowerCase();\nfilterVal = filterVal\n  .replace(/^(ma\\s+|khach\\s+|sdt\\s+|so\\s+)/g, '')\n  .trim();\n\nif (!filterVal || filterVal.length < 2) {\n  const last50 = rows.slice(-50);\n  return [{\n    json: {\n      rows: last50,\n      filter: filterVal,\n      has_filter: false\n    }\n  }];\n}\n\nconst filtered = rows.filter(r => {\n  for (const key in r) {\n    if (Object.prototype.hasOwnProperty.call(r, key) && r[key]) {\n      const valStr = String(r[key]).toLowerCase();\n      if (valStr.includes(filterVal)) {\n        return true;\n      }\n    }\n  }\n  return false;\n});\n\nconst result = filtered.slice(0, 50);\nreturn [{\n  json: {\n    rows: result,\n    filter: filterVal,\n    has_filter: true\n  }\n}];"
+      },
+      "id": "wf13-filter-rows",
+      "name": "Filter Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  contents: [{\n    parts: [{\n      text: \"Bạn là trợ lý dữ liệu thông minh cho hệ thống quản lý nhật ký hóa đơn cho thuê thời trang.\\n\\nCâu hỏi của admin: \\\"\" + $('Parse Intent + Guards').item.json.user_message + \"\\\"\\n\\nFilter gợi ý (nếu có): \" + ($('Parse Intent + Guards').item.json.filter || 'không có') + \"\\n\\nDữ liệu đọc từ Google Sheet (đã được lọc/giới hạn 50 dòng):\\n\" + JSON.stringify($json.rows) + \"\\n\\nNhiệm vụ: Trả lời ngắn gọn, chính xác bằng tiếng Việt thân thiện. Nếu có filter, lọc dữ liệu khớp. Nếu không có filter, tổng hợp tổng quan. Trình bày kết quả dạng bảng Markdown nếu có từ 2 dòng trở lên. Không bịa thêm dữ liệu ngoài những gì có trong JSON trên. Nếu không tìm thấy, nói rõ là không tìm thấy.\"\n    }]\n  }]\n}) }}"
+      },
+      "id": "wf13-compose",
+      "name": "Gemini Compose Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1880,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const geminiResp = $('Gemini Compose Answer').first().json;\nlet answer;\ntry {\n  answer = geminiResp.candidates[0].content.parts[0].text;\n} catch (e) {\n  answer = 'Đã đọc dữ liệu nhưng không tạo được câu trả lời. Vui lòng thử lại.';\n}\nlet chatId = $('Parse Intent + Guards').first().json.chat_id;\n// Fallback khi trigger trực tiếp từ canvas/Execute Workflow (không qua Telegram Gateway)\n// → dùng ADMIN_TELEGRAM_CHAT_ID từ env làm safe default. Workflow này chỉ dành cho admin.\nif (!chatId || String(chatId).trim() === '') {\n  chatId = $env.ADMIN_TELEGRAM_CHAT_ID || '';\n}\nreturn [{ json: { success: true, status: 'success', chat_id: String(chatId || ''), text: answer } }];"
+      },
+      "id": "wf13-prep-read-msg",
+      "name": "Prepare Read Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2060,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  contents: [{\n    parts: [{\n      text: \"Bạn là bộ trích xuất dữ liệu đơn hàng. Sheet đích có 11 cột theo thứ tự: STT, Số hóa đơn, Mã Sản phẩm, Tên khách, SĐT khách, Địa chỉ, Ngày thuê, Ngày trả, Nhân viên, Hoa hồng, E mail của KH.\\n\\nCâu yêu cầu của admin: \\\"\" + $json.user_message + \"\\\"\\n\\nHãy trích xuất thông tin đơn hàng từ câu trên. Trả về JSON với các field snake_case sau:\\n- so_hoa_don (BẮT BUỘC - số nguyên hoặc chuỗi số, vd '201')\\n- ma_san_pham (BẮT BUỘC - mã sản phẩm dạng VDxx, vd 'VD01')\\n- ten_khach (BẮT BUỘC - tên khách hàng, viết HOA nếu là tên riêng Việt Nam)\\n- sdt_khach (BẮT BUỘC - 10 chữ số, bắt đầu bằng 0)\\n- dia_chi (tùy chọn - nếu có)\\n- ngay_thue (BẮT BUỘC - định dạng dd/MM/yyyy, vd '20/06/2026')\\n- ngay_tra (BẮT BUỘC - định dạng dd/MM/yyyy)\\n- nhan_vien (tùy chọn)\\n- hoa_hong (tùy chọn)\\n- email_kh (tùy chọn)\\n\\nQuy tắc:\\n- Tên khách Việt Nam viết HOA toàn bộ (vd 'NGUYỄN THỊ A').\\n- Ngày luôn định dạng dd/MM/yyyy. Nếu admin viết 'mai', 'ngày kia' mà không có ngày cụ thể, để null.\\n- SĐT bỏ ký tự không phải số, chỉ giữ 10 chữ số.\\n- Nếu thiếu trường BẮT BUỘC, trả về field đó là chuỗi rỗng '' (KHÔNG trả null để hệ thống dễ validate).\\n- Nếu thiếu trường tùy chọn, BỎ QUA field đó (không trả trong JSON).\\n\\nTrả về JSON hợp lệ.\"\n    }]\n  }],\n  generationConfig: {\n    responseMimeType: \"application/json\",\n    responseSchema: {\n      type: \"object\",\n      properties: {\n        so_hoa_don: {type: \"string\"},\n        ma_san_pham: {type: \"string\"},\n        ten_khach: {type: \"string\"},\n        sdt_khach: {type: \"string\"},\n        dia_chi: {type: \"string\"},\n        ngay_thue: {type: \"string\"},\n        ngay_tra: {type: \"string\"},\n        nhan_vien: {type: \"string\"},\n        hoa_hong: {type: \"string\"},\n        email_kh: {type: \"string\"}\n      },\n      required: [\"so_hoa_don\", \"ma_san_pham\", \"ten_khach\", \"sdt_khach\", \"ngay_thue\", \"ngay_tra\"]\n    }\n  }\n}) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "wf13-extract-row",
+      "name": "Gemini Extract Row",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1520,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst extract = $('Parse Intent + Guards').first().json;\n\nlet rowData;\ntry {\n  const text = input.candidates[0].content.parts[0].text;\n  rowData = JSON.parse(text);\n} catch (e) {\n  return [{\n    json: {\n      valid: false,\n      missing: ['ALL'],\n      error: 'Gemini trả về JSON không hợp lệ. Vui lòng thử diễn đạt lại.',\n      chat_id: extract.chat_id,\n    }\n  }];\n}\n\nconst required = ['so_hoa_don', 'ma_san_pham', 'ten_khach', 'sdt_khach', 'ngay_thue', 'ngay_tra'];\nconst missing = required.filter(k => !rowData[k] || String(rowData[k]).trim() === '');\n\n// Validate SĐT format (10 số, bắt đầu 0)\nif (rowData.sdt_khach && !/^0\\d{9}$/.test(String(rowData.sdt_khach).replace(/\\D/g, ''))) {\n  const sdtClean = String(rowData.sdt_khach).replace(/\\D/g, '');\n  if (sdtClean.length === 10 && sdtClean.startsWith('0')) {\n    rowData.sdt_khach = sdtClean;  // Auto-fix\n  } else {\n    missing.push('sdt_khach (không hợp lệ, cần 10 số bắt đầu 0)');\n  }\n}\n\n// Validate date format dd/MM/yyyy\nconst dateRegex = /^\\d{2}\\/\\d{2}\\/\\d{4}$/;\nif (rowData.ngay_thue && !dateRegex.test(rowData.ngay_thue)) {\n  missing.push('ngay_thue (không đúng định dạng dd/MM/yyyy)');\n}\nif (rowData.ngay_tra && !dateRegex.test(rowData.ngay_tra)) {\n  missing.push('ngay_tra (không đúng định dạng dd/MM/yyyy)');\n}\n\nif (missing.length > 0) {\n  return [{\n    json: {\n      valid: false,\n      missing: missing,\n      data: rowData,\n      chat_id: extract.chat_id,\n      error: 'Thiếu hoặc sai định dạng: ' + missing.join(', '),\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    valid: true,\n    data: rowData,\n    chat_id: extract.chat_id,\n  }\n}];"
+      },
+      "id": "wf13-validate",
+      "name": "Validate Required Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1740,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "wf13-if-valid",
+      "name": "If Valid Data",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst data = input.data || {};\n// Map Gemini output -> column header in sheet\n// Header: STT, Số hóa đơn, Mã Sản phẩm, Tên khách, SĐT khách, Địa chỉ, Ngày thuê, Ngày trả, Nhân viên, Hoa hồng, E mail của KH\nreturn [{\n  json: {\n    // STT sẽ được tự sinh bằng công thức ROW()-1\n    so_hoa_don: data.so_hoa_don || '',\n    ma_san_pham: data.ma_san_pham || '',\n    ten_khach: data.ten_khach || '',\n    sdt_khach: data.sdt_khach || '',\n    dia_chi: data.dia_chi || '',\n    ngay_thue: data.ngay_thue || '',\n    ngay_tra: data.ngay_tra || '',\n    nhan_vien: data.nhan_vien || '',\n    hoa_hong: data.hoa_hong || '',\n    email_kh: data.email_kh || '',\n    chat_id: input.chat_id,\n  }\n}];"
+      },
+      "id": "wf13-prep-append",
+      "name": "Prepare Append Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID || 'CONFIG_GOOGLE_SHEETS_DOCUMENT_ID' }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Parse Intent + Guards').item.json.sheet_name || 'Nhật ký hóa đơn' }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "STT": "={{ \"=ROW()-1\" }}",
+            "Số hóa đơn": "={{ $json.so_hoa_don }}",
+            "Mã Sản phẩm": "={{ $json.ma_san_pham }}",
+            "Tên khách": "={{ $json.ten_khach }}",
+            "SĐT khách": "={{ $json.sdt_khach }}",
+            "Địa chỉ": "={{ $json.dia_chi }}",
+            "Ngày thuê": "={{ $json.ngay_thue }}",
+            "Ngày trả": "={{ $json.ngay_tra }}",
+            "Nhân viên": "={{ $json.nhan_vien }}",
+            "Hoa hồng": "={{ $json.hoa_hong }}",
+            "E mail của KH": "={{ $json.email_kh }}"
+          },
+          "schema": [
+            {
+              "id": "STT",
+              "displayName": "STT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Số hóa đơn",
+              "displayName": "Số hóa đơn",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Mã Sản phẩm",
+              "displayName": "Mã Sản phẩm",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Tên khách",
+              "displayName": "Tên khách",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "SĐT khách",
+              "displayName": "SĐT khách",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Địa chỉ",
+              "displayName": "Địa chỉ",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Ngày thuê",
+              "displayName": "Ngày thuê",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Ngày trả",
+              "displayName": "Ngày trả",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Nhân viên",
+              "displayName": "Nhân viên",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Hoa hồng",
+              "displayName": "Hoa hồng",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "E mail của KH",
+              "displayName": "E mail của KH",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf13-append",
+      "name": "Append to NhatKyHoaDon",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        2200,
+        420
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "gcgn9fUriMr0ZO6s",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const extract = $('Parse Intent + Guards').first().json;\nconst validate = $('Validate Required Fields').first().json;\nlet text = '';\n\n// Defense-in-depth: fallback ADMIN_TELEGRAM_CHAT_ID khi Extract Input khong lay duoc chat_id\nlet chatId = String(extract.chat_id || '').trim();\nif (!chatId) {\n  chatId = String($env.ADMIN_TELEGRAM_CHAT_ID || '').trim();\n}\n\nconst success = validate.valid !== false;\nif (!success) {\n  // Có lỗi validation\n  const missing = validate.missing || [];\n  text = '⚠️ *Không thể thêm đơn - thiếu thông tin:*\\n\\n';\n  text += 'Thiếu/sai: ' + missing.join(', ') + '\\n\\n';\n  text += 'Các trường bắt buộc:\\n';\n  text += '• Số hóa đơn\\n';\n  text += '• Mã Sản phẩm (VDxx)\\n';\n  text += '• Tên khách\\n';\n  text += '• SĐT khách (10 số, bắt đầu 0)\\n';\n  text += '• Ngày thuê (dd/MM/yyyy)\\n';\n  text += '• Ngày trả (dd/MM/yyyy)\\n';\n  text += '\\n📝 Ví dụ: \"Thêm đơn: HĐ 999, SP VD28, khách LÊ VĂN E, SĐT 0912345678, thuê 20/06/2026 trả 25/06/2026\"';\n} else {\n  // Thành công - preview row vừa ghi\n  const d = validate.data;\n  text = '✅ *Đã thêm đơn hàng mới thành công!*\\n\\n';\n  text += '📋 *Số hóa đơn:* ' + (d.so_hoa_don || '(trống)') + '\\n';\n  text += '👗 *Mã SP:* ' + (d.ma_san_pham || '(trống)') + '\\n';\n  text += '👤 *Khách:* ' + (d.ten_khach || '(trống)') + '\\n';\n  text += '📱 *SĐT:* ' + (d.sdt_khach || '(trống)') + '\\n';\n  if (d.dia_chi) text += '📍 *Địa chỉ:* ' + d.dia_chi + '\\n';\n  text += '📅 *Thuê:* ' + (d.ngay_thue || '(trống)') + ' → *Trả:* ' + (d.ngay_tra || '(trống)') + '\\n';\n  if (d.nhan_vien) text += '👨‍💼 *Nhân viên:* ' + d.nhan_vien + '\\n';\n  if (d.hoa_hong) text += '💰 *Hoa hồng:* ' + d.hoa_hong + '\\n';\n  if (d.email_kh) text += '📧 *Email:* ' + d.email_kh + '\\n';\n}\n\nreturn [{ json: { success: success, status: success ? 'success' : 'validation_failed', chat_id: chatId, text: text } }];"
+      },
+      "id": "wf13-prep-write-msg",
+      "name": "Prepare Write Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const extract = $('Extract Input').first().json;\nlet chatId = String(extract.chat_id || '').trim();\nif (!chatId) {\n  chatId = String($env.ADMIN_TELEGRAM_CHAT_ID || '').trim();\n}\nreturn [{\n  json: {\n    success: false,\n    status: 'empty_input',\n    chat_id: chatId,\n    text: '👋 Vui lòng gửi câu hỏi hoặc yêu cầu về Nhật ký hóa đơn.\\n\\nVí dụ:\\n• \"Cho tôi xem tất cả đơn của khách NGUYỄN THỊ A\"\\n• \"Thêm đơn: HĐ 999, SP VD28, khách LÊ VĂN E, SĐT 0912345678, thuê 20/06/2026 trả 25/06/2026\"'\n  }\n}];"
+      },
+      "id": "wf13-empty-reply",
+      "name": "Empty Input Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-empty",
+              "leftValue": "={{ $json.is_empty_input }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "wf13-if-empty",
+      "name": "If Empty Input",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        640,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Input": {
+      "main": [
+        [
+          {
+            "node": "If Empty Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Intent Classifier": {
+      "main": [
+        [
+          {
+            "node": "Parse Intent + Guards",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Intent + Guards": {
+      "main": [
+        [
+          {
+            "node": "Switch Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Action": {
+      "main": [
+        [
+          {
+            "node": "Read Range",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini Extract Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Range": {
+      "main": [
+        [
+          {
+            "node": "Filter Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Rows": {
+      "main": [
+        [
+          {
+            "node": "Gemini Compose Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Compose Answer": {
+      "main": [
+        [
+          {
+            "node": "Prepare Read Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Read Reply": {
+      "main": [
+        []
+      ]
+    },
+    "Gemini Extract Row": {
+      "main": [
+        [
+          {
+            "node": "Validate Required Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Required Fields": {
+      "main": [
+        [
+          {
+            "node": "If Valid Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Valid Data": {
+      "main": [
+        [
+          {
+            "node": "Prepare Append Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Write Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Append Data": {
+      "main": [
+        [
+          {
+            "node": "Append to NhatKyHoaDon",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to NhatKyHoaDon": {
+      "main": [
+        [
+          {
+            "node": "Prepare Write Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Write Reply": {
+      "main": [
+        []
+      ]
+    },
+    "If Empty Input": {
+      "main": [
+        [
+          {
+            "node": "Empty Input Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini Intent Classifier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Empty Input Reply": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "nhatky-hoadon"
+    },
+    {
+      "name": "telegram-tool"
+    }
+  ]
+}

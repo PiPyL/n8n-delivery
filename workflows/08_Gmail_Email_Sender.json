@@ -1,0 +1,281 @@
+{
+  "id": "wf08gmailemailsender",
+  "name": "08_Gmail_Email_Sender",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "ge-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [240, 320]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Kiểm tra nếu user đã cung cấp email trực tiếp hay chỉ có tên\nconst params = $input.first().json.params || {};\nconst recipientRaw = params.recipient_name || params.recipient || '';\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n\n// Nếu recipientRaw chứa @ → là email trực tiếp\nconst isDirectEmail = emailRegex.test(recipientRaw.trim());\n\nreturn [{\n  json: {\n    ...($input.first().json),\n    params: {\n      ...params,\n      is_direct_email: isDirectEmail,\n      recipient_name: recipientRaw.trim(),\n      direct_email: isDirectEmail ? recipientRaw.trim() : ''\n    }\n  }\n}];"
+      },
+      "id": "ge-prepare",
+      "name": "Prepare Email Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 320]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "" },
+          "conditions": [
+            {
+              "id": "direct-email-check",
+              "leftValue": "={{ $json.params.is_direct_email }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ge-if-direct",
+      "name": "Is Direct Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 320]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID || 'CONFIG_GOOGLE_SHEETS_DOCUMENT_ID' }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "DanhBa"
+        },
+        "options": {}
+      },
+      "id": "ge-lookup-contacts",
+      "name": "Lookup Contacts Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [920, 420],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "gcgn9fUriMr0ZO6s",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fuzzy match tên người nhận từ danh bạ\nconst allItems = $input.all();\nconst trigger = $node['Prepare Email Request'].json;\nconst params = trigger.params || {};\nconst recipientName = (params.recipient_name || '').toLowerCase().trim();\n\nif (!recipientName) {\n  return [{ json: { found: false, error: 'Thiếu tên người nhận', search_name: '' } }];\n}\n\nconst contacts = allItems.filter(item => item.json && item.json.email);\n\n// Priority match: exact name > biet_danh > partial name\nlet matched = null;\n\n// 1) Exact match (case-insensitive)\nmatched = contacts.find(c => {\n  const ten = (c.json.ten || '').toLowerCase().trim();\n  return ten === recipientName;\n});\n\n// 2) Biet_danh match\nif (!matched) {\n  matched = contacts.find(c => {\n    const aliases = (c.json.biet_danh || '').toLowerCase().split(',').map(s => s.trim());\n    return aliases.some(a => a && (a === recipientName || a.includes(recipientName) || recipientName.includes(a)));\n  });\n}\n\n// 3) Partial name match\nif (!matched) {\n  matched = contacts.find(c => {\n    const ten = (c.json.ten || '').toLowerCase();\n    return ten.includes(recipientName) || recipientName.includes(ten.split(' ').pop());\n  });\n}\n\n// 4) Check for multiple matches\nconst allMatches = contacts.filter(c => {\n  const ten = (c.json.ten || '').toLowerCase();\n  const aliases = (c.json.biet_danh || '').toLowerCase();\n  return ten.includes(recipientName) || aliases.includes(recipientName);\n});\n\nif (allMatches.length > 1) {\n  const nameList = allMatches.map((c, i) => `${i+1}. ${c.json.ten} (${c.json.cong_ty || 'chưa có công ty'})`).join('\\n');\n  return [{\n    json: {\n      found: false,\n      multiple_matches: true,\n      error: `Có ${allMatches.length} liên hệ tên \"${params.recipient_name}\"`,\n      match_list: nameList,\n      search_name: params.recipient_name\n    }\n  }];\n}\n\nif (matched) {\n  return [{\n    json: {\n      found: true,\n      email: matched.json.email,\n      name: matched.json.ten,\n      company: matched.json.cong_ty || '',\n      role: matched.json.vai_tro || '',\n      group: matched.json.nhom || '',\n      notes: matched.json.ghi_chu || ''\n    }\n  }];\n}\n\n// Not found — provide list of available contacts\nconst availableNames = contacts.slice(0, 10).map(c => c.json.ten).filter(Boolean).join(', ');\nreturn [{\n  json: {\n    found: false,\n    multiple_matches: false,\n    error: `Không tìm thấy \"${params.recipient_name}\" trong danh bạ`,\n    available_names: availableNames,\n    search_name: params.recipient_name\n  }\n}];"
+      },
+      "id": "ge-match-contact",
+      "name": "Match Contact",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 420]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "" },
+          "conditions": [
+            {
+              "id": "found-check",
+              "leftValue": "={{ $json.found }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ge-if-found",
+      "name": "Contact Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1400, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Hợp nhất thông tin liên hệ: từ lookup hoặc email trực tiếp\nconst trigger = $node['Prepare Email Request'].json;\nconst params = trigger.params || {};\n\nlet contactInfo;\n\nif (params.is_direct_email) {\n  // Email trực tiếp — không cần lookup\n  contactInfo = {\n    found: true,\n    email: params.direct_email,\n    name: params.recipient_name,\n    company: '',\n    role: '',\n    group: ''\n  };\n} else {\n  // Từ kết quả lookup\n  contactInfo = $input.first().json;\n}\n\nreturn [{\n  json: {\n    contact: contactInfo,\n    request: {\n      body_prompt: params.email_body_prompt || params.raw_text || '',\n      subject_hint: params.email_subject || '',\n      chat_id: params.chat_id\n    }\n  }\n}];"
+      },
+      "id": "ge-merge-contact",
+      "name": "Merge Contact Info",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1640, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\n    \"parts\": [{\n      \"text\": \"Bạn là trợ lý soạn email chuyên nghiệp bằng tiếng Việt.\\n\\nThông tin người nhận:\\n- Tên: {{ $json.contact.name }}\\n- Công ty: {{ $json.contact.company }}\\n- Vai trò: {{ $json.contact.role }}\\n\\nYêu cầu từ người gửi: \\\"{{ $json.request.body_prompt }}\\\"\\n{% if $json.request.subject_hint %}\\nGợi ý tiêu đề: {{ $json.request.subject_hint }}\\n{% endif %}\\n\\nHãy soạn email với:\\n1. Tiêu đề email (subject) ngắn gọn, rõ ý, chuyên nghiệp\\n2. Nội dung email (body) thân thiện, lịch sự\\n3. Lời chào phù hợp vai trò người nhận\\n4. Lời kết với chữ ký: [Tên người gửi]\\n\\nTRẢ VỀ JSON HỢP LỆ:\\n{\\n  \\\"subject\\\": \\\"tiêu đề email\\\",\\n  \\\"body\\\": \\\"nội dung email (text thuần, dùng \\\\n cho xuống dòng)\\\"\\n}\"\n    }]\n  }],\n  \"generationConfig\": {\n    \"responseMimeType\": \"application/json\",\n    \"responseSchema\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"subject\": {\n          \"type\": \"string\",\n          \"description\": \"Tiêu đề email ngắn gọn\"\n        },\n        \"body\": {\n          \"type\": \"string\",\n          \"description\": \"Nội dung email đầy đủ\"\n        }\n      },\n      \"required\": [\"subject\", \"body\"]\n    }\n  }\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "ge-ai-compose",
+      "name": "AI Compose Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1880, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Gemini response và chuẩn bị dữ liệu gửi email\nconst response = $input.first().json;\nconst mergedData = $node['Merge Contact Info'].json;\n\ntry {\n  const text = response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';\n  let parsed;\n  try {\n    parsed = JSON.parse(text);\n  } catch(e) {\n    // Fallback: extract manually\n    const subjectMatch = text.match(/\"subject\"\\s*:\\s*\"([^\"]+)\"/);\n    const bodyMatch = text.match(/\"body\"\\s*:\\s*\"([\\s\\S]+?)\"(?:\\s*[,}])/);\n    parsed = {\n      subject: subjectMatch ? subjectMatch[1] : 'Email từ trợ lý AI',\n      body: bodyMatch ? bodyMatch[1].replace(/\\\\n/g, '\\n') : text\n    };\n  }\n\n  return [{\n    json: {\n      to_email: mergedData.contact.email,\n      to_name: mergedData.contact.name,\n      subject: parsed.subject || 'Email từ trợ lý AI',\n      body: parsed.body || '',\n      chat_id: mergedData.request.chat_id\n    }\n  }];\n} catch(e) {\n  return [{\n    json: {\n      to_email: mergedData.contact.email,\n      to_name: mergedData.contact.name,\n      subject: 'Email từ trợ lý AI',\n      body: mergedData.request.body_prompt,\n      chat_id: mergedData.request.chat_id,\n      parse_error: e.message\n    }\n  }];\n}"
+      },
+      "id": "ge-parse-email",
+      "name": "Parse Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2120, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $json.to_email }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.body }}",
+        "options": {}
+      },
+      "id": "ge-send-gmail",
+      "name": "Send Email via Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [2360, 300],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "seRSBm4TO4IHTEyd",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const emailContent = $('Parse Email Content').first().json;\nreturn [{\n  json: {\n    success: true,\n    status: 'success',\n    chat_id: String(emailContent.chat_id || ''),\n    text: `✅ *Email đã gửi thành công!*\\n\\n📧 *Người nhận:* ${emailContent.to_name} (\\`${emailContent.to_email}\\`)\\n📋 *Tiêu đề:* ${emailContent.subject}\\n🕐 *Thời gian:* ${$now.toFormat('HH:mm dd/MM/yyyy')}\\n\\n_Nội dung email được soạn bởi AI tự động._`\n  }\n}];"
+      },
+      "id": "ge-prep-success-reply",
+      "name": "Prepare Success Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const matchResult = $('Match Contact').first().json;\nconst triggerParams = $('Prepare Email Request').first().json.params || {};\nlet text = `❌ *Không tìm thấy liên hệ!*\\n\\n🔍 Tên tìm kiếm: *${matchResult.search_name}*\\n\\n`;\nif (matchResult.multiple_matches) {\n  text += `📋 Có nhiều người trùng tên:\\n${matchResult.match_list}\\n\\nVui lòng nhắn lại với tên đầy đủ hơn.`;\n} else {\n  text += `📋 Danh bạ hiện có:\\n${matchResult.available_names || 'Danh bạ đang trống'}\\n\\nVui lòng kiểm tra lại tên hoặc cung cấp email trực tiếp.`;\n}\nreturn [{\n  json: {\n    success: false,\n    status: 'contact_not_found',\n    chat_id: String(triggerParams.chat_id || ''),\n    text: text\n  }\n}];"
+      },
+      "id": "ge-prep-not-found-reply",
+      "name": "Prepare Not Found Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1640,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const triggerParams = $('Prepare Email Request').first().json.params || {};\nreturn [{\n  json: {\n    success: false,\n    status: 'send_error',\n    chat_id: String(triggerParams.chat_id || ''),\n    text: `⚠️ *Lỗi khi gửi email!*\\n\\nĐã xảy ra lỗi trong quá trình gửi email. Vui lòng:\\n1. Kiểm tra Gmail credentials đã được cấu hình chưa\\n2. Thử lại sau vài giây\\n3. Hoặc liên hệ admin nếu lỗi tiếp tục xảy ra`\n  }\n}];"
+      },
+      "id": "ge-prep-send-error-reply",
+      "name": "Prepare Send Error Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        460
+      ]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [{ "node": "Prepare Email Request", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Email Request": {
+      "main": [
+        [{ "node": "Is Direct Email?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Direct Email?": {
+      "main": [
+        [{ "node": "Merge Contact Info", "type": "main", "index": 0 }],
+        [{ "node": "Lookup Contacts Sheet", "type": "main", "index": 0 }]
+      ]
+    },
+    "Lookup Contacts Sheet": {
+      "main": [
+        [{ "node": "Match Contact", "type": "main", "index": 0 }]
+      ]
+    },
+    "Match Contact": {
+      "main": [
+        [{ "node": "Contact Found?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Contact Found?": {
+      "main": [
+        [{ "node": "Merge Contact Info", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Not Found Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "Merge Contact Info": {
+      "main": [
+        [{ "node": "AI Compose Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "AI Compose Email": {
+      "main": [
+        [{ "node": "Parse Email Content", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Email Content": {
+      "main": [
+        [{ "node": "Send Email via Gmail", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Email via Gmail": {
+      "main": [
+        [{ "node": "Prepare Success Reply", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Send Error Reply", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

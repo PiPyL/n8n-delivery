@@ -1,0 +1,379 @@
+{
+  "id": "wf07fashionimagegenerator",
+  "name": "07_Fashion_Image_Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough",
+        "returnOutput": "lastRunOnly",
+        "inputDataMode": "defineBelow",
+        "schema": [
+          {
+            "name": "prompt",
+            "type": "string"
+          },
+          {
+            "name": "chat_id",
+            "type": "string"
+          },
+          {
+            "name": "photo_file_id",
+            "type": "string"
+          }
+        ]
+      },
+      "id": "fash-trigger-exec",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fashion-image",
+        "responseMode": "onReceived",
+        "responseCode": 202,
+        "options": {}
+      },
+      "id": "fash-trigger-webhook",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nlet parsedQuery = {};\nif (item.query) {\n  try {\n    parsedQuery = JSON.parse(item.query);\n  } catch (e) {\n    parsedQuery = { prompt: item.query };\n  }\n}\n\nconst body = item.body || item;\nconst params = body.params || body;\nconst fileId = parsedQuery.photo_file_id || parsedQuery.file_id || params.photo_file_id || params.file_id || body.photo_file_id || body.file_id || '';\nconst caption = parsedQuery.prompt || parsedQuery.caption || params.photo_caption || params.caption || params.prompt || body.photo_caption || body.caption || body.prompt || '';\nconst chatId = parsedQuery.chat_id || parsedQuery.chatId || params.photo_chat_id || params.chat_id || params.chatId || body.photo_chat_id || body.chat_id || body.chatId || '';\n\nif (!fileId) {\n  throw new Error('Không tìm thấy file_id ảnh sản phẩm. Vui lòng gửi ảnh kèm caption mô tả.');\n}\n\nreturn [{\n  json: {\n    file_id: fileId,\n    caption: caption,\n    chat_id: String(chatId),\n    source: parsedQuery.source || params.source || body.source || 'telegram'\n  }\n}];"
+      },
+      "id": "fash-normalize",
+      "name": "Normalize Fashion Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "=🎨 *Đang tạo ảnh thời trang chuyên nghiệp...*\n\n⏳ Bot đang xử lý ảnh sản phẩm của bạn, vui lòng chờ 30-60 giây.\n\n📸 _Ảnh sẽ được tối ưu cho bán hàng trên mạng xã hội._",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "fash-notify",
+      "name": "Send Processing Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        560,
+        340
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getFile?file_id={{ $node['Normalize Fashion Request'].json.file_id }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "fash-get-file-info",
+      "name": "Get Telegram File Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        800,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.telegram.org/file/bot{{ $env.TELEGRAM_BOT_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "fash-download-photo",
+      "name": "Download Photo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1040,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Read binary via RPC helper, build Gemini request\nconst request = $node['Normalize Fashion Request'].json;\nconst chatId = request.chat_id;\nconst caption = request.caption || '';\n\n// Get binary buffer via n8n RPC (resolves filesystem-v2 refs)\nconst binaryKey = Object.keys($input.first().binary || {})[0] || 'data';\nconst buffer = await helpers.getBinaryDataBuffer(0, binaryKey);\nconst photoBase64 = buffer.toString('base64');\n\n// Detect MIME from base64 magic bytes\nlet photoMime = 'image/jpeg';\nif (photoBase64.startsWith('/9j/')) photoMime = 'image/jpeg';\nelse if (photoBase64.startsWith('iVBOR')) photoMime = 'image/png';\nelse if (photoBase64.startsWith('R0lG')) photoMime = 'image/gif';\nelse if (photoBase64.startsWith('UklG')) photoMime = 'image/webp';\n\nif (!photoBase64 || photoBase64.length < 100) {\n  return [{ json: { success: false, chat_id: chatId, error_message: 'Binary buffer empty.' } }];\n}\n\n// Detect context from caption\nconst wantsModel = /người mẫu|model|mặc|wear|trên người/i.test(caption);\nconst wantsWhite = /nền trắng|white bg|studio trắng|nền sạch/i.test(caption);\nconst wantsLifestyle = /lifestyle|đời thường|outdoor|ngoài trời|phố|café|biển|park/i.test(caption);\nconst wantsFlatlay = /flat.?lay|treo|mannequin|ma.?nơ.?canh|ghost/i.test(caption);\nconst cleanCaption = caption.replace(/^🎨\\s*(Tạo ảnh AI|tạo ảnh)\\s*/i, '').trim();\n\n// Extract aspect ratio from caption if specified. Default to 3:4 for model, 1:1 for flatlay\nconst ratioMatch = caption.match(/(1:1|3:4|4:5|9:16|16:9|2:3|3:2)/);\nconst aspectRatio = ratioMatch ? ratioMatch[0] : '1:1';\n\n// Map to Gemini API AspectRatio Enum\nconst ratioMap = {\n  '1:1': 'ASPECT_RATIO_ONE_BY_ONE',\n  '3:4': 'ASPECT_RATIO_THREE_BY_FOUR',\n  '4:3': 'ASPECT_RATIO_FOUR_BY_THREE',\n  '9:16': 'ASPECT_RATIO_NINE_BY_SIXTEEN',\n  '16:9': 'ASPECT_RATIO_SIXTEEN_BY_NINE',\n  '2:3': 'ASPECT_RATIO_TWO_BY_THREE',\n  '3:2': 'ASPECT_RATIO_THREE_BY_TWO',\n  '4:5': 'ASPECT_RATIO_FOUR_BY_FIVE',\n  '5:4': 'ASPECT_RATIO_FIVE_BY_FOUR'\n};\nconst geminiAspectRatio = ratioMap[aspectRatio] || 'ASPECT_RATIO_ONE_BY_ONE';\n\n// Build prompt — following Gemini's official \"Advanced composition\" pattern with strict humanization\nconst p = [];\n\nif (wantsFlatlay) {\n  // Flat lay / ghost mannequin mode\n  p.push('Create a professional e-commerce clothing product photo. Take the clothing garment from the reference image and display it on an invisible ghost mannequin or as a premium styled flat lay, showing the complete shape, drape, and fit of the garment.');\n  p.push('The output must be a COMPLETELY NEW professional product photograph showing the garment displayed cleanly.');\n} else {\n  // Default: Model wearing the product\n  p.push('Create a professional e-commerce fashion photo. Take the clothing product from the reference image and generate a NEW photo of a professional model wearing this exact garment.');\n  p.push('Generate a realistic, full-body shot of the model wearing the product. The model should have a natural, relaxed, and confident pose with a candid, pleasant facial expression.');\n  \n  // Product integrity constraint\n  p.push('CRITICAL REQUIREMENT: The clothing on the model must remain 100% faithful to the reference image. The exact cut, folds, print patterns, logo placement, fabric texture, and color values of the clothing must be preserved perfectly. Do not simplify or alter the design.');\n}\n\n// Background & Lighting\nif (wantsLifestyle) {\n  p.push('Set the scene in a modern minimalist café with large glass windows letting in soft natural daylight, or a stylish urban street sidewalk in Vietnam, with soft background blur (bokeh) to keep focus on the subject. Adjust lighting, shadows, and highlights on the model to match this environment naturally.');\n} else if (wantsWhite) {\n  p.push('Use a pure white seamless studio background with clean, even professional lighting and minimal soft shadows under the feet/garment.');\n} else {\n  p.push('Use a clean studio background with a soft warm gradient from off-white to light gray. Professional fashion photography lighting setup with soft shadows.');\n}\n\n// Seller custom instructions\nif (cleanCaption && cleanCaption.length > 3) {\n  p.push('Additional seller requirements: ' + cleanCaption);\n}\n\n// Photographic style & quality parameters (Humanization)\np.push('Style and Technique: Captured with a DSLR 35mm lens, natural depth of field, subtle film grain/sensor noise for high realism. Beautiful natural textures on skin and hair, avoiding artificial porcelain skin look. One single fashion photograph with sharp focus. No text overlay, watermark, price tag, or graphic elements.');\n\nreturn [{\n  json: {\n    chat_id: chatId,\n    clean_caption: cleanCaption,\n    gemini_body: {\n      contents: [{\n        role: 'user',\n        parts: [\n          { inline_data: { mime_type: photoMime, data: photoBase64 } },\n          { text: p.join('\\n\\n') }\n        ]\n      }],\n      generationConfig: {\n        responseModalities: ['IMAGE'],\n        responseFormat: {\n          image: { \n            aspectRatio: geminiAspectRatio, \n            imageSize: 'IMAGE_SIZE_ONE_K'\n          }\n        }\n      }\n    }\n  }\n}];"
+      },
+      "id": "fash-build-prompt",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.gemini_body) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "fash-call-gemini",
+      "name": "Call Gemini API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1520,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Gemini response and extract generated image\nconst chatId = $node['Build Prompt'].json.chat_id;\nconst cleanCaption = $node['Build Prompt'].json.clean_caption || '';\n\ntry {\n  const res = $input.first().json;\n  \n  // Check if blocked by safety settings\n  const firstCandidate = res.candidates?.[0];\n  const finishReason = firstCandidate?.finishReason || firstCandidate?.finish_reason;\n  if (finishReason === 'SAFETY') {\n    return [{ json: { success: false, chat_id: chatId, error_message: '⚠️ Không thể tạo ảnh thời trang do hình ảnh sản phẩm hoặc mô tả kích hoạt bộ lọc an toàn của AI. Vui lòng sử dụng ảnh sản phẩm rõ ràng hơn, góc chụp trực diện hoặc điều chỉnh lại mô tả của bạn.' } }];\n  }\n  \n  const parts = firstCandidate?.content?.parts || [];\n  const imgPart = parts.find(p => p.inlineData?.data || p.inline_data?.data);\n  const imgData = imgPart?.inlineData || imgPart?.inline_data;\n\n  if (!imgData?.data) {\n    const textPart = parts.find(p => p.text);\n    const apiError = textPart?.text || res.error?.message || 'Không có dữ liệu ảnh trả về từ API.';\n    return [{ json: { success: false, chat_id: chatId, error_message: 'Gemini không trả về ảnh. Chi tiết: ' + apiError } }];\n  }\n\n  const mime = imgData.mimeType || imgData.mime_type || 'image/png';\n  const ext = mime.includes('png') ? 'png' : 'jpg';\n  const summary = cleanCaption || 'Ảnh sản phẩm thời trang chuyên nghiệp';\n\n  return [{ \n    json: { success: true, chat_id: chatId, prompt_summary: summary, mime_type: mime },\n    binary: { image: { data: imgData.data, mimeType: mime, fileName: 'fashion_product.' + ext, fileExtension: ext } }\n  }];\n} catch (err) {\n  return [{ json: { success: false, chat_id: chatId, error_message: 'Lỗi xử lý phản hồi AI: ' + (err.message || String(err)) } }];\n}"
+      },
+      "id": "fash-parse-response",
+      "name": "Parse Gemini Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "success-check",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "fash-check-result",
+      "name": "Check Result",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "={{ $json.chat_id }}",
+        "binaryData": true,
+        "binaryPropertyName": "image",
+        "additionalFields": {
+          "caption": "={{ '✅ Ảnh thời trang AI!\\n🎨 ' + ($json.prompt_summary || '').substring(0, 200) + '\\n\\n💡 Gửi ảnh sản phẩm khác để tạo thêm!' }}",
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "fash-send-photo",
+      "name": "Send Fashion Photo",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        2240,
+        240
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ '❌ *Không thể tạo ảnh thời trang*\\n\\n' + ($json.error_message || 'Lỗi không xác định') + '\\n\\n💡 Vui lòng thử lại.' }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "fash-send-error",
+      "name": "Send Error Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        2240,
+        480
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Fashion Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Fashion Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Fashion Request": {
+      "main": [
+        [
+          {
+            "node": "Send Processing Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Processing Notification": {
+      "main": [
+        [
+          {
+            "node": "Get Telegram File Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Telegram File Info": {
+      "main": [
+        [
+          {
+            "node": "Download Photo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Photo": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gemini API": {
+      "main": [
+        [
+          {
+            "node": "Parse Gemini Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Gemini Response": {
+      "main": [
+        [
+          {
+            "node": "Check Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Result": {
+      "main": [
+        [
+          {
+            "node": "Send Fashion Photo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Error Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

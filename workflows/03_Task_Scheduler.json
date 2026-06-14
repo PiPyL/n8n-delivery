@@ -1,0 +1,130 @@
+{
+  "name": "03_Task_Scheduler",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+      "name": "Daily Cron Trigger (8:00 AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        380,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID || 'CONFIG_GOOGLE_SHEETS_DOCUMENT_ID' }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $env.GOOGLE_TASKS_SHEET_NAME || 'CongViec' }}"
+        },
+        "options": {}
+      },
+      "id": "e4f5a6b7-c8d9-0e1f-2a3b-4c5d6e7f8a9b",
+      "name": "Read Work Schedule Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        580,
+        240
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst today = DateTime.now().toFormat('yyyy-MM-dd');\n\n// Lọc các công việc trong ngày hôm nay có trạng thái chưa hoàn thành\nconst pendingTasks = items.filter(item => {\n  const date = item.json[\"Ngày\"];\n  const status = item.json[\"Trạng thái\"];\n  return date === today && status !== \"Hoàn thành\";\n});\n\nif (pendingTasks.length === 0) {\n  return [{\n    json: {\n      message: \"🎉 Tuyệt vời! Bạn không có công việc tồn đọng nào cho ngày hôm nay.\"\n    }\n  }];\n}\n\nlet markdown = `📅 **DANH SÁCH CÔNG VIỆC HÀNG NGÀY (${today})**\\n\\n`;\npendingTasks.forEach((task, index) => {\n  const time = task.json[\"Giờ\"] || \"Cả ngày\";\n  const desc = task.json[\"Nội dung\"] || \"Không có mô tả\";\n  markdown += `${index + 1}. ⏰ *${time}* - ${desc}\\n`;\n});\n\nmarkdown += \"\\nChúc bạn một ngày làm việc hiệu quả!\";\n\nreturn [{\n  json: {\n    message: markdown\n  }\n}];"
+      },
+      "id": "d7c8b9a0-f1e2-3d4c-5b6a-7f8e9d0c1b2a",
+      "name": "Format Daily Tasks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.ADMIN_TELEGRAM_CHAT_ID || 'CONFIG_ADMIN_TELEGRAM_CHAT_ID' }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "f2e3d4c5-b6a7-8f9e-0d1c-2b3a4f5e6d7c",
+      "name": "Send Daily Reminder Bot",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        980,
+        240
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily Cron Trigger (8:00 AM)": {
+      "main": [
+        [
+          {
+            "node": "Read Work Schedule Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Work Schedule Sheets": {
+      "main": [
+        [
+          {
+            "node": "Format Daily Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Daily Tasks": {
+      "main": [
+        [
+          {
+            "node": "Send Daily Reminder Bot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

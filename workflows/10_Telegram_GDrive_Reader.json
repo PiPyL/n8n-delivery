@@ -1,0 +1,515 @@
+{
+  "id": "wf10telegramgdrivereader",
+  "name": "10_Telegram_GDrive_Reader",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "tg-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn items.map(item => {\n  const payload = item.json;\n  const params = payload.params || {};\n  const text = params.raw_text || \"\";\n  const chat_id = params.chat_id;\n  \n  // Lấy tên file do Gemini nhận diện hoặc trích xuất thủ công qua Regex nếu Gemini bỏ sót\n  let fileName = params.file_name || null;\n  if (!fileName) {\n    const regex = /(?:đọc\\s+file\\s+|tìm\\s+file\\s+)?([\\w\\d_-]+\\.[a-zA-Z0-9]+)/i;\n    const match = text.match(regex);\n    fileName = match ? match[1] : null;\n  }\n  \n  const fileExtension = fileName ? fileName.split('.').pop().toLowerCase() : null;\n  \n  return {\n    json: {\n      chat_id,\n      original_message: text,\n      fileName: fileName,\n      fileExtension: fileExtension,\n      has_file: !!fileName\n    }\n  };\n});"
+      },
+      "id": "tg-extract-filename",
+      "name": "Extract Filename",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "file-check",
+              "leftValue": "={{ $json.has_file }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "tg-check-file-req",
+      "name": "Check File Request",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "⚠️ *Cú pháp không hợp lệ!*\n\nVui lòng gửi tin nhắn theo cú pháp: \n`đọc file <tên_file>` (Ví dụ: `đọc file tailieu.txt`)",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "tg-notify-no-file",
+      "name": "Notify No File Request",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        700,
+        150
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "=name = '{{ $json.fileName }}' and trashed = false",
+        "options": {}
+      },
+      "id": "tg-gdrive-search",
+      "name": "Search GDrive File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        700,
+        450
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "wMsQbO484pWkTwHO",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst originalRequest = $node[\"Extract Filename\"].json;\n\nif (items.length === 0 || !items[0].json.id) {\n  return [{\n    json: {\n      found: false,\n      chat_id: originalRequest.chat_id,\n      fileName: originalRequest.fileName\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    found: true,\n    chat_id: originalRequest.chat_id,\n    fileId: items[0].json.id,\n    fileName: items[0].json.name,\n    fileExtension: originalRequest.fileExtension\n  }\n}];"
+      },
+      "id": "tg-verify-results",
+      "name": "Verify Search Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "found-check",
+              "leftValue": "={{ $json.found }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "tg-is-found",
+      "name": "Is Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "=❌ *Không tìm thấy file!*\n\nKhông tìm thấy file mang tên *{{ $json.fileName }}* trên Google Drive của bạn. Vui lòng kiểm tra lại tên file.",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "tg-notify-not-found",
+      "name": "Notify File Not Found",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.fileId }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "tg-gdrive-download",
+      "name": "Download GDrive File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1300,
+        600
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "wMsQbO484pWkTwHO",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ ($binary?.data?.mimeType || '').includes('pdf') ? 'pdf' : (($binary?.data?.mimeType || '').includes('spreadsheet') || ($binary?.data?.mimeType || '').includes('excel') || ($binary?.data?.mimeType || '').includes('ods') ? 'xlsx' : (($binary?.data?.mimeType || '').includes('csv') ? 'csv' : 'txt')) }}",
+        "numberOutputs": 4,
+        "rules": {
+          "rules": [
+            {
+              "value2": "pdf",
+              "output": 0
+            },
+            {
+              "value2": "xlsx",
+              "output": 1
+            },
+            {
+              "value2": "csv",
+              "output": 2
+            }
+          ]
+        },
+        "fallbackOutput": 3
+      },
+      "id": "tg-switch-type",
+      "name": "Switch File Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "tg-extract-pdf",
+      "name": "Extract From PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1750,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "tg-extract-xlsx",
+      "name": "Extract From XLSX",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1750,
+        530
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "tg-extract-csv",
+      "name": "Extract From CSV",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1750,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "tg-extract-txt",
+      "name": "Extract From Text File",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1750,
+        790
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst searchInfo = $node[\"Verify Search Results\"].json;\nconst fileName = searchInfo.fileName || \"Không rõ\";\nconst fileExtension = searchInfo.fileExtension || \"\";\n\nlet fileContent = \"\";\nif (items.length > 0) {\n  const firstItem = items[0].json;\n  \n  if (firstItem.extractedText !== undefined) {\n    fileContent = firstItem.extractedText;\n  } else {\n    // Dành cho XLSX/CSV (dữ liệu dạng bảng dòng cột)\n    fileContent = items.map((item, index) => {\n      const row = item.json;\n      return `Dòng ${index + 1}: ` + Object.entries(row)\n        .map(([key, val]) => `${key}: ${val}`)\n        .join(\" | \");\n    }).join(\"\\n\");\n  }\n}\n\n// Giới hạn ký tự gửi tin nhắn\nconst limit = 4000;\nlet isTruncated = false;\nlet finalContent = fileContent.trim();\n\nif (finalContent.length > limit) {\n  finalContent = finalContent.substring(0, limit);\n  isTruncated = true;\n}\n\nconst originalChatId = searchInfo.chat_id;\n\nlet textMessage = `📖 *Nội dung file:* \\`${fileName}\\`\\n\\n${finalContent}`;\nif (isTruncated) {\n  textMessage += `\\n\\n⚠️ *Lưu ý:* Nội dung quá dài nên đã bị cắt bớt ở mức 4000 ký tự.`;\n}\n\nif (!finalContent) {\n  textMessage = `📖 *Nội dung file:* \\`${fileName}\\`\\n\\n_(File trống hoặc không thể trích xuất văn bản)_`;\n}\n\nreturn [{\n  json: {\n    chat_id: originalChatId,\n    text: textMessage\n  }\n}];"
+      },
+      "id": "tg-format-response",
+      "name": "Format & Truncate Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "tg-send-content",
+      "name": "Send Content Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        600
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Filename",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Filename": {
+      "main": [
+        [
+          {
+            "node": "Check File Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check File Request": {
+      "main": [
+        [
+          {
+            "node": "Search GDrive File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify No File Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search GDrive File": {
+      "main": [
+        [
+          {
+            "node": "Verify Search Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Search Results": {
+      "main": [
+        [
+          {
+            "node": "Is Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Found?": {
+      "main": [
+        [
+          {
+            "node": "Download GDrive File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify File Not Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download GDrive File": {
+      "main": [
+        [
+          {
+            "node": "Switch File Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch File Type": {
+      "main": [
+        [
+          {
+            "node": "Extract From PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract From XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract From CSV",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract From Text File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract From PDF": {
+      "main": [
+        [
+          {
+            "node": "Format & Truncate Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract From XLSX": {
+      "main": [
+        [
+          {
+            "node": "Format & Truncate Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract From CSV": {
+      "main": [
+        [
+          {
+            "node": "Format & Truncate Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract From Text File": {
+      "main": [
+        [
+          {
+            "node": "Format & Truncate Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format & Truncate Response": {
+      "main": [
+        [
+          {
+            "node": "Send Content Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

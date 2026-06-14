@@ -1,0 +1,184 @@
+[
+  {
+    "intent": "LƯU_ĐƠN",
+    "workflowId": "inline:Save Order Sheets",
+    "description": "Lưu thông tin đơn hàng từ Telegram vào Google Sheets.",
+    "requiredFields": [
+      "customer_name",
+      "phone",
+      "address",
+      "product"
+    ],
+    "optionalFields": [
+      "raw_text"
+    ],
+    "examples": [
+      "Lưu đơn anh Nam 090... địa chỉ Q1 mua áo thun"
+    ],
+    "disambiguationRules": [
+      "Chỉ dùng khi tin nhắn có thông tin mua hàng hoặc lưu đơn rõ ràng."
+    ]
+  },
+  {
+    "intent": "TẠO_MEDIA",
+    "workflowId": "wf04mediagenerator hoặc wf07fashionimagegenerator",
+    "description": "Tạo ảnh AI hoặc ảnh thời trang từ mô tả/ảnh sản phẩm.",
+    "requiredFields": [
+      "prompt"
+    ],
+    "optionalFields": [
+      "photo_file_id",
+      "photo_caption",
+      "aspect_ratio"
+    ],
+    "examples": [
+      "Tạo ảnh AI mẫu mặc áo này",
+      "Thiết kế banner khuyến mãi"
+    ],
+    "disambiguationRules": [
+      "Không dùng chỉ vì tin nhắn có ảnh. Cần có yêu cầu tạo/sinh/thiết kế ảnh rõ ràng, hoặc ảnh không caption trong luồng tạo ảnh."
+    ]
+  },
+  {
+    "intent": "TẠO_VIDEO",
+    "workflowId": "wf09videogenerator",
+    "description": "Tạo video/clip AI từ ảnh sản phẩm hoặc mô tả chuyển động.",
+    "requiredFields": [
+      "prompt"
+    ],
+    "optionalFields": [
+      "photo_file_id",
+      "photo_caption"
+    ],
+    "examples": [
+      "Tạo video catwalk từ ảnh này",
+      "Dựng clip quảng cáo"
+    ],
+    "disambiguationRules": [
+      "Ưu tiên khi có từ video, clip, Veo, chuyển động, dựng phim."
+    ]
+  },
+  {
+    "intent": "TẠO_SHEET",
+    "workflowId": "inline:Create Daily Sheets",
+    "description": "Tạo Google Sheet mới.",
+    "requiredFields": [],
+    "optionalFields": [
+      "title"
+    ],
+    "examples": [
+      "Tạo sheet thống kê hôm nay"
+    ],
+    "disambiguationRules": [
+      "Chỉ dùng cho yêu cầu tạo bảng tính/sheet."
+    ]
+  },
+  {
+    "intent": "LÊN_LỊCH_BÀI",
+    "workflowId": "wf06socialpublisher",
+    "description": "Tạo yêu cầu đăng/lên lịch bài Facebook/TikTok và chờ duyệt.",
+    "requiredFields": [
+      "content",
+      "publish_at"
+    ],
+    "optionalFields": [
+      "platform",
+      "image_url",
+      "video_url",
+      "photo_file_id",
+      "photo_caption"
+    ],
+    "examples": [
+      "Đăng bài lên fanpage",
+      "Lên lịch bài Facebook lúc 9h: nội dung ..."
+    ],
+    "disambiguationRules": [
+      "Nếu session đang chờ thông tin bài đăng, ảnh/caption tiếp theo là dữ liệu bài đăng, không phải yêu cầu tạo ảnh AI."
+    ]
+  },
+  {
+    "intent": "DUYỆT_BÀI",
+    "workflowId": "wf06socialpublisher",
+    "description": "Duyệt bài đang chờ bằng mã approval.",
+    "requiredFields": [
+      "approval_id"
+    ],
+    "optionalFields": [],
+    "examples": [
+      "Duyệt bài SOCABC123"
+    ],
+    "disambiguationRules": [
+      "Ưu tiên khi có mã SOC hoặc từ duyệt/approve."
+    ]
+  },
+  {
+    "intent": "GỬI_EMAIL",
+    "workflowId": "wf08gmailemailsender",
+    "description": "Soạn và gửi email bằng Gmail.",
+    "requiredFields": [
+      "recipient_name",
+      "email_body_prompt"
+    ],
+    "optionalFields": [
+      "email_subject"
+    ],
+    "examples": [
+      "Gửi email cho anh Nam báo giá dịch vụ"
+    ],
+    "disambiguationRules": [
+      "Chỉ dùng khi có yêu cầu gửi mail/email/thư."
+    ]
+  },
+  {
+    "intent": "ĐỌC_FILE",
+    "workflowId": "wf10telegramgdrivereader",
+    "description": "Tìm và đọc file từ Google Drive.",
+    "requiredFields": [
+      "file_name"
+    ],
+    "optionalFields": [],
+    "examples": [
+      "Đọc file baocao.pdf trên Drive"
+    ],
+    "disambiguationRules": [
+      "Chỉ dùng khi user yêu cầu đọc/tìm/lấy nội dung file."
+    ]
+  },
+  {
+    "intent": "CHAT",
+    "workflowId": "inline:Reply Chat Telegram",
+    "description": "Trả lời hội thoại hoặc hỏi tiếp khi thiếu dữ liệu.",
+    "requiredFields": [
+      "reply"
+    ],
+    "optionalFields": [
+      "missing_fields",
+      "state_update"
+    ],
+    "examples": [
+      "Chào bạn",
+      "Bạn muốn đăng lúc nào?"
+    ],
+    "disambiguationRules": [
+      "Dùng khi thiếu required fields hoặc cần hỏi rõ ý định."
+    ]
+  },
+  {
+    "intent": "LỊCH_HẸN",
+    "workflowId": "wf14calendar",
+    "description": "Tạo, xem hoặc hủy lịch hẹn trên Google Calendar của admin.",
+    "requiredFields": [
+      "user_message"
+    ],
+    "optionalFields": [],
+    "examples": [
+      "Đặt lịch họp team lúc 10h sáng mai",
+      "Tuần này có lịch gì?",
+      "Hủy lịch họp ngày mai"
+    ],
+    "disambiguationRules": [
+      "Chỉ dùng khi user nói về lịch hẹn, cuộc họp, sự kiện, reminder theo giờ.",
+      "Nếu không rõ thời gian, tool sẽ hỏi lại user."
+    ]
+  }
+]

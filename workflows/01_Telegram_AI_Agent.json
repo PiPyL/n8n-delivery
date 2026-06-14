@@ -1,0 +1,478 @@
+{
+  "id": "wf01telegramagent",
+  "name": "01_Telegram_AI_Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "agent-trigger",
+      "name": "TelegramTrigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        500
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      },
+      "webhookId": "1da3d5f1-4c7f-473f-bf0d-2e27a6e6d290"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Chuẩn hóa Telegram message: photo/video metadata + build agent input text.\nconst originalData = $input.first().json;\nconst msg = originalData.message || {};\nconst chatId = String(msg.chat?.id || '');\nconst hasPhoto = !!(msg.photo && msg.photo.length > 0);\nconst replyMsg = msg.reply_to_message || {};\nconst hasReplyPhoto = !!(replyMsg.photo && replyMsg.photo.length > 0);\nconst hasVideo = !!(msg.video || msg.video_note);\nconst hasReplyVideo = !!(replyMsg.video || replyMsg.video_note);\n\nlet userText = msg.text || msg.caption || '';\nlet photoFileId = '';\nlet videoFileId = '';\nlet messageKind = 'text';\n\n// Extract photo file_id\nif (hasPhoto) {\n  const photo = msg.photo[msg.photo.length - 1];\n  photoFileId = photo.file_id;\n  messageKind = msg.caption ? 'photo_with_caption' : 'photo_only';\n  if (!userText) userText = 'Tạo ảnh thời trang chuyên nghiệp từ ảnh sản phẩm tôi gửi';\n} else if (hasReplyPhoto) {\n  const photo = replyMsg.photo[replyMsg.photo.length - 1];\n  photoFileId = photo.file_id;\n  messageKind = 'reply_to_photo';\n}\n\n// Extract video file_id\nif (hasVideo) {\n  videoFileId = (msg.video && msg.video.file_id) || (msg.video_note && msg.video_note.file_id) || '';\n  messageKind = 'video';\n} else if (hasReplyVideo) {\n  videoFileId = (replyMsg.video && replyMsg.video.file_id) || (replyMsg.video_note && replyMsg.video_note.file_id) || '';\n  messageKind = 'reply_to_video';\n}\n\n// Build context metadata for agent\nlet contextHint = '';\nif (photoFileId) contextHint += `\\n[Ảnh đính kèm: file_id=${photoFileId}]`;\nif (videoFileId) contextHint += `\\n[Video đính kèm: file_id=${videoFileId}]`;\n\nconst agentInput = userText + contextHint;\n\nreturn [{\n  json: {\n    chatInput: agentInput,\n    chatMessage: agentInput,\n    sessionId: chatId,\n    chat_id: chatId,\n    photo_file_id: photoFileId,\n    video_file_id: videoFileId,\n    message_kind: messageKind,\n    raw_text: userText,\n    original_data: originalData\n  }\n}];"
+      },
+      "id": "agent-prepare",
+      "name": "Prepare Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "=Bạn là trợ lý AI automation của AutoWork, giao tiếp qua Telegram Bot bằng tiếng Việt.\n\nNhiệm vụ: Hiểu yêu cầu người dùng, chọn đúng tool, thực thi và trả kết quả ngắn gọn.\n\nKhả năng:\n- Tạo ảnh AI từ mô tả text (Tool: media_generator)\n- Tạo ảnh thời trang từ ảnh sản phẩm đính kèm (Tool: fashion_image_generator)\n- Tạo video AI quảng cáo từ ảnh sản phẩm (Tool: video_generator)\n- Tạo caption Facebook bằng AI từ ảnh/video/topic (Tool: facebook_smart_publisher) - ưu tiên dùng khi user muốn AI viết nội dung quảng cáo\n- Gửi email tự động qua Gmail (Tool: gmail_sender)\n- Đọc/tìm file trên Google Drive (Tool: gdrive_reader)\n- Thao tác Google Sheets & Docs: tạo bảng tính, kẻ bảng, lọc dữ liệu, soạn văn bản (Tool: workspace_assistant)\n- Lưu đơn hàng vào Google Sheets (Tool: save_order)\n- Tạo, xem hoặc hủy lịch hẹn trên Google Calendar (Tool: calendar_assistant) - dùng khi user nói về lịch hẹn, cuộc họp, sự kiện, reminder theo giờ, hỏi 'tuần này có gì', 'mai có lịch gì', 'hủy lịch X'\n\nQuy tắc bắt buộc:\n1. Luôn trả lời bằng tiếng Việt thân thiện, ngắn gọn.\n2. Với yêu cầu phức hợp (ví dụ: lấy file + gửi email + đặt lịch), thực hiện tuần tự từng bước và báo cáo kết quả.\n3. Trước khi gửi email, PHẢI hỏi xác nhận người dùng trước. Riêng đăng bài Facebook, workflow facebook_smart_publisher tự hiển thị preview và chờ user reply 'Duyệt bài' nên KHÔNG cần hỏi thêm.\n3b. Với tool facebook_smart_publisher: LUÔN truyền đủ các field bắt buộc. Workflow này tự xử lý TỪ A-Z (sinh caption + preview + duyệt + đăng), KHÔNG cần gọi tool khác.\n   - mode='ai' (KHÔNG có sẵn caption, muốn AI viết): BẮT BUỘC truyền user_prompt (mô tả/chủ đề), media_kind, chat_id, photo_file_id/video_file_id (nếu có media).\n   - mode='manual' (CÓ sẵn caption hoàn chỉnh từ user): BẮT BUỘC truyền user_caption, media_kind, chat_id, photo_file_id/video_file_id (nếu có media). KHÔNG cần truyền user_prompt.\n   - QUAN TRỌNG: Nếu user không cung cấp chủ đề/mô tả cho AI (mode='ai') hoặc không có caption (mode='manual'), HÃY HỎI user trước khi gọi tool. Không tự bịa prompt.\n4. Nếu thiếu thông tin cần thiết, hỏi bổ sung trước khi gọi tool.\n5. Khi có ảnh đính kèm:\n   - Nếu user yêu cầu tạo ảnh/thiết kế → gọi fashion_image_generator\n   - Nếu user yêu cầu video/clip/chuyển động → gọi video_generator\n   - Nếu user yêu cầu đăng bài lên Facebook → LUÔN gọi facebook_smart_publisher (mode='ai' nếu muốn AI viết, mode='manual' nếu đã có sẵn caption)\n6. Luôn truyền chat_id={{ $json.chat_id }} vào params khi gọi tool.\n7. Nếu user gửi /start, /menu, /help → trả lời danh sách khả năng.\n8. Không bao giờ bịa thông tin. Nếu không chắc, hỏi lại user.\n9. Khi tool thực thi xong, tóm tắt kết quả cho user (không trả JSON thô).\n10. Max 3 tool calls mỗi turn để tránh timeout.\n11. Các tool `calendar_assistant`, `nhatky_hoadon_assistant`, và `gmail_sender` trả về kết quả dạng JSON `{ success: boolean, status: string, text: string }`. Bạn PHẢI kiểm tra trường `success`: nếu false, hãy hiển thị chính xác nội dung trong trường `text` đó cho người dùng (đây là yêu cầu nhập thêm thông tin hoặc báo lỗi của sub-workflow), TUYỆT ĐỐI không được tự ý báo thành công hoặc suy diễn; nếu true, sử dụng nội dung trường `text` để tóm tắt và báo thành công.\n12. Khi gọi `calendar_assistant`, nếu người dùng dùng mốc thời gian tương đối như \"ngày mai\", \"thứ hai tuần tới\" hoặc thiếu ngày mà đã nói trước đó, bạn PHẢI tự tính toán ngày cụ thể (ví dụ dựa trên ngày hiện tại hoặc lịch sử trò chuyện) và đưa ngày cụ thể đó vào tham số `user_message` trước khi gọi tool.\n13. TOOL `facebook_smart_publisher`: BẮT BUỘC truyền đủ 4 field: mode, media_kind, chat_id, và (user_prompt HOẶC user_caption). KHÔNG BAO GIỜ gọi tool với input rỗng {} hoặc thiếu field. Nếu user thiếu thông tin, DỪNG và hỏi user trước. Tool sẽ tự fail nếu thiếu → gây lỗi cho user."
+        }
+      },
+      "id": "agent-brain",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [
+        700,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.1-flash-lite",
+        "options": {
+          "temperature": 0.4,
+          "maxOutputTokens": 10000
+        }
+      },
+      "id": "agent-llm",
+      "name": "Gemini 3.1 Flash Lite",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        520,
+        720
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionKey": "={{ $('Prepare Message').item.json.sessionId }}",
+        "contextWindowLength": 10
+      },
+      "id": "agent-memory",
+      "name": "Window Buffer Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        700,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "name": "media_generator",
+        "description": "Tạo ảnh AI từ mô tả text (không cần ảnh đính kèm). Input: JSON với prompt (mô tả ảnh cần tạo, tiếng Việt hoặc Anh), chat_id (ID Telegram). Ví dụ: {\"prompt\": \"Váy đầm lụa đỏ trên người mẫu 3:4\", \"chat_id\": \"123456\"}. Output: Ảnh được gửi trực tiếp về Telegram.",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf04mediagenerator",
+          "mode": "id"
+        }
+      },
+      "id": "tool-media",
+      "name": "Tool: Media Generator",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        420,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "name": "fashion_image_generator",
+        "description": "Tạo ảnh mẫu mặc trang phục từ ảnh sản phẩm đính kèm. Dùng khi user GỬI ẢNH kèm yêu cầu tạo ảnh/thiết kế. Input: JSON với prompt (mô tả), chat_id, photo_file_id (từ metadata ảnh đính kèm). Output: Ảnh thời trang chuyên nghiệp gửi về Telegram.",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf07fashionimagegenerator",
+          "mode": "id"
+        }
+      },
+      "id": "tool-fashion",
+      "name": "Tool: Fashion Image",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        560,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "name": "video_generator",
+        "description": "Tạo video AI quảng cáo thời trang từ ảnh sản phẩm. Dùng khi user yêu cầu video/clip/chuyển động/Veo. Input: JSON với prompt (mô tả chuyển động: catwalk, orbit, windy, lifestyle), chat_id, photo_file_id. Mất khoảng 1-3 phút xử lý. Output: Video MP4 gửi về Telegram.",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf09videogenerator",
+          "mode": "id"
+        }
+      },
+      "id": "tool-video",
+      "name": "Tool: Video Generator",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        700,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "name": "facebook_smart_publisher",
+        "description": "AI Content Studio cho Facebook Fanpage - TOOL DUY NHẤT xử lý đăng bài.\n\n⚠️ QUY TẮC BẮT BUỘC KHI GỌI TOOL NÀY (AI PHẢI TUÂN THỦ):\n1. KHÔNG BAO GIỜ được gọi tool với input rỗng {} hoặc thiếu field bắt buộc. Tool sẽ fail và gây lỗi cho user.\n2. LUÔN truyền đủ 4 field BẮT BUỘC: mode, media_kind, chat_id, và (user_prompt HOẶC user_caption tùy mode).\n3. Nếu user chưa cung cấp đủ thông tin (thiếu caption cho mode='manual' hoặc thiếu chủ đề cho mode='ai'), HÃY HỎI user trước. KHÔNG tự bịa prompt.\n\nINPUT SCHEMA (BẮT BUỘC theo đúng format):\n{\n  \"mode\": \"ai\" | \"manual\",                     // BẮT BUỘC: 'ai' nếu muốn AI viết caption, 'manual' nếu user đã có caption\n  \"media_kind\": \"image\" | \"video\" | \"text\",     // BẮT BUỘC: loại media\n  \"user_prompt\": \"<string>\",                    // BẮT BUỘC khi mode='ai' hoặc media_kind='text': chủ đề/mô tả cho AI\n  \"user_caption\": \"<string>\",                   // BẮT BUỘC khi mode='manual': caption hoàn chỉnh user cung cấp\n  \"photo_file_id\": \"<Telegram file_id>\",        // BẮT BUỘC khi media_kind='image' (lấy từ attachment)\n  \"video_file_id\": \"<Telegram file_id>\",        // BẮT BUỘC khi media_kind='video'\n  \"chat_id\": \"<Telegram chat_id>\"               // BẮT BUỘC: LUÔN lấy từ $json.chat_id của Telegram trigger\n}\n\nVÍ DỤ ĐÚNG (BẮT BUỘC theo format này):\n- Ảnh + AI viết caption: {\"mode\":\"ai\",\"media_kind\":\"image\",\"photo_file_id\":\"AgAC...\",\"user_prompt\":\"BST áo dài Tết\",\"chat_id\":\"670923744\"}\n- Ảnh + caption có sẵn: {\"mode\":\"manual\",\"media_kind\":\"image\",\"photo_file_id\":\"AgAC...\",\"user_caption\":\"Sale 50% hôm nay\",\"chat_id\":\"670923744\"}\n- Chỉ text AI viết: {\"mode\":\"ai\",\"media_kind\":\"text\",\"user_prompt\":\"Khuyến mãi 30/4\",\"chat_id\":\"670923744\"}\n\nQUY TRÌNH BẮT BUỘC:\n1. Phân tích yêu cầu user + đính kèm (nếu có ảnh/video)\n2. Nếu THIẾU thông tin bắt buộc (caption cho manual, chủ đề cho AI) → DỪNG, hỏi user bằng tiếng Việt trước\n3. Nếu ĐỦ thông tin → gọi tool với JSON đúng schema\n4. Tool tự xử lý A-Z (sinh caption + preview + duyệt + đăng), KHÔNG cần gọi thêm tool khác",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf12facebooksmartpublisher",
+          "mode": "id"
+        }
+      },
+      "id": "tool-smart-publisher",
+      "name": "Tool: Facebook Smart Publisher",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        840,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "name": "gmail_sender",
+        "description": "Soạn và gửi email qua Gmail. Tự động tra cứu danh bạ nếu chỉ biết tên người nhận. Input: JSON với recipient_name (tên hoặc email trực tiếp), email_body_prompt (mô tả nội dung email), chat_id. Tool trả về JSON { success: boolean, status: string, text: string }. Bạn phải kiểm tra success: nếu false, hiển thị chính xác nội dung 'text' để báo lỗi; nếu true, hiển thị nội dung 'text' tóm tắt kết quả gửi thành công. LUÔN hỏi xác nhận user trước khi gọi gửi email.",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf08gmailemailsender",
+          "mode": "id"
+        }
+      },
+      "id": "tool-gmail",
+      "name": "Tool: Gmail Sender",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        980,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "name": "gdrive_reader",
+        "description": "Tìm và đọc nội dung file trên Google Drive. Input: JSON với file_name (tên file hoặc từ khóa tìm kiếm), chat_id. Output: Nội dung file hoặc danh sách file tìm thấy.",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf10telegramgdrivereader",
+          "mode": "id"
+        }
+      },
+      "id": "tool-drive",
+      "name": "Tool: GDrive Reader",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        420,
+        1060
+      ]
+    },
+    {
+      "parameters": {
+        "name": "workspace_assistant",
+        "description": "Thao tác Google Sheets và Google Docs nâng cao. Đọc/lọc/tìm kiếm dữ liệu trong Sheets, tạo bảng tính mới có kẻ bảng và định dạng, soạn văn bản trên Docs (báo giá, hợp đồng, thư chào hàng). Input: JSON với raw_text (yêu cầu bằng ngôn ngữ tự nhiên), chat_id. Output: Kết quả thao tác + link file.",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf11workspaceassistant",
+          "mode": "id"
+        }
+      },
+      "id": "tool-workspace",
+      "name": "Tool: Workspace Assistant",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        560,
+        1060
+      ]
+    },
+    {
+      "parameters": {
+        "name": "save_order",
+        "description": "Lưu thông tin đơn hàng vào Google Sheets. Dùng khi user cung cấp thông tin khách hàng/đơn hàng cần lưu trữ. Input: JSON với customer_name, phone, address, product, chat_id. Output: Xác nhận đã lưu.",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf01saveorder",
+          "mode": "id"
+        }
+      },
+      "id": "tool-order",
+      "name": "Tool: Save Order",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        700,
+        1060
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Prepare Message').item.json.chat_id }}",
+        "text": "={{ $json.output || $json.text || 'Tôi đã xử lý xong yêu cầu của bạn.' }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "agent-reply",
+      "name": "Send Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        500
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "nhatky_hoadon_assistant",
+        "description": "Đọc thông tin từ Google Sheet 'Nhật ký hóa đơn' hoặc ghi nhận đơn mới. Dùng khi user hỏi về đơn hàng, khách thuê, sản phẩm VDxx, ngày thuê/trả, hoặc muốn ghi nhận đơn mới. Input JSON: {input: <câu chat của user>, chat_id: <ID chat Telegram>}. Tool trả về JSON { success: boolean, status: string, text: string }. Bạn phải kiểm tra success: nếu false, hiển thị chính xác nội dung 'text' để báo lỗi/thiếu thông tin; nếu true, hiển thị nội dung 'text' tóm tắt kết quả thành công.",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf13nhatkyass",
+          "mode": "id"
+        }
+      },
+      "id": "tool-nhatky",
+      "name": "Tool: NhatKy Hoa Don",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        840,
+        1060
+      ]
+    },
+    {
+      "parameters": {
+        "name": "calendar_assistant",
+        "description": "Tạo lịch hẹn/sự kiện mới trên Google Calendar của admin. Dùng khi user nói về lịch hẹn, cuộc họp, sự kiện mới, 'đặt lịch X lúc Y'. Input BẮT BUỘC: JSON {user_message: <câu chat của user>, chat_id: <ID chat Telegram>}. Bạn PHẢI tự động làm giàu user_message với ngày cụ thể nếu user nói mốc thời gian tương đối (ví dụ 'ngày mai', 'thứ hai tuần tới') hoặc lấy từ lịch sử chat trước khi truyền vào tool. Tool trả về JSON { success: boolean, status: string, text: string }. Hãy kiểm tra success: nếu false, hiển thị chính xác nội dung 'text' để yêu cầu thêm thông tin; nếu true, hiển thị 'text' báo thành công. KHÔNG dùng tool này để xem/hủy lịch.",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf14calendar",
+          "mode": "id"
+        }
+      },
+      "id": "tool-calendar",
+      "name": "Tool: Calendar Assistant",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        980,
+        1060
+      ]
+    }
+  ],
+  "connections": {
+    "TelegramTrigger": {
+      "main": [
+        [
+          {
+            "node": "Prepare Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Message": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini 3.1 Flash Lite": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window Buffer Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Media Generator": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Fashion Image": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Video Generator": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Gmail Sender": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: GDrive Reader": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Workspace Assistant": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Save Order": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Facebook Smart Publisher": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: NhatKy Hoa Don": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Calendar Assistant": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,166 @@
+{
+  "name": "05_TikTok_Token_Refresher",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "value": 12
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+      "name": "Interval (12 Hours)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        380,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.tiktokapis.com/v2/oauth/token/",
+        "sendHeaders": true,
+        "headers": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyFormat": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "client_key",
+              "value": "={{ $env.TIKTOK_CLIENT_KEY || 'CONFIG_TIKTOK_CLIENT_KEY' }}"
+            },
+            {
+              "name": "client_secret",
+              "value": "={{ $env.TIKTOK_CLIENT_SECRET || 'CONFIG_TIKTOK_CLIENT_SECRET' }}"
+            },
+            {
+              "name": "grant_type",
+              "value": "refresh_token"
+            },
+            {
+              "name": "refresh_token",
+              "value": "={{ $env.TIKTOK_REFRESH_TOKEN || 'CONFIG_TIKTOK_REFRESH_TOKEN' }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e4f5a6b7-c8d9-0e1f-2a3b-4c5d6e7f8a9b",
+      "name": "TikTok OAuth Token Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        580,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cập nhật Refresh Token và Access Token mới vào n8n memory hoặc ghi lên Google Sheets\nconst response = $input.first().json;\n\nif (response.error || !response.access_token) {\n  return [{\n    json: {\n      status: \"failed\",\n      error: response.error_description || \"Lỗi không xác định khi refresh token\"\n    }\n  }];\n}\n\n// Lưu trữ giá trị token mới\n// (Thông thường sẽ ghi đè lên hàng lưu token trong Google Sheets cấu hình)\nreturn [{\n  json: {\n    status: \"success\",\n    access_token: response.access_token,\n    refresh_token: response.refresh_token,\n    expires_in: response.expires_in,\n    refreshed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "d7c8b9a0-f1e2-3d4c-5b6a-7f8e9d0c1b2a",
+      "name": "Process New Tokens",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID || 'CONFIG_GOOGLE_SHEETS_DOCUMENT_ID' }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $env.GOOGLE_TOKENS_SHEET_NAME || 'Tokens' }}"
+        },
+        "updateKey": "Key",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Key": "tiktok_credentials",
+            "AccessToken": "={{ $json.access_token }}",
+            "RefreshToken": "={{ $json.refresh_token }}",
+            "LastUpdated": "={{ $json.refreshed_at }}"
+          },
+          "matchingColumns": [
+            "Key"
+          ]
+        },
+        "options": {}
+      },
+      "id": "e4f5a6b7-c8d9-0e1f-2a3b-4c5d6e7f8a9c",
+      "name": "Save Tokens to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        980,
+        240
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Interval (12 Hours)": {
+      "main": [
+        [
+          {
+            "node": "TikTok OAuth Token Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TikTok OAuth Token Request": {
+      "main": [
+        [
+          {
+            "node": "Process New Tokens",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process New Tokens": {
+      "main": [
+        [
+          {
+            "node": "Save Tokens to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

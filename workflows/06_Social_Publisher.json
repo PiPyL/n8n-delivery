@@ -1,0 +1,197 @@
+{
+  "id": "wf06socialpublisher",
+  "name": "06_Social_Publisher",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough",
+        "returnOutput": "lastRunOnly"
+      },
+      "id": "b29adf2b-5407-451c-bdb4-8f053dc7dd63",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nlet params = input.params || input;\nif (input.query && typeof input.query === 'string') {\n  try {\n    const parsedQuery = JSON.parse(input.query);\n    if (parsedQuery && typeof parsedQuery === 'object') {\n      params = { ...params, ...parsedQuery };\n    }\n  } catch (e) {}\n}\nlet intent = input.intent || params.intent || 'LÊN_LỊCH_BÀI';\nif (params.approval_id || params.approvalId) {\n  intent = 'DUYỆT_BÀI';\n}\n\nlet staticData = {};\ntry {\n  const fs = require('fs');\n  const path = require('path');\n  const filePath = path.join($env.N8N_USER_FOLDER || './.n8n', 'pending_posts.json');\n  if (fs.existsSync(filePath)) {\n    staticData = JSON.parse(fs.readFileSync(filePath, 'utf8'));\n  }\n} catch (e) {\n  staticData = $getWorkflowStaticData('global');\n}\nstaticData.pendingPosts = staticData.pendingPosts || {};\n\nfunction saveStaticData(data) {\n  try {\n    const fs = require('fs');\n    const path = require('path');\n    const filePath = path.join($env.N8N_USER_FOLDER || './.n8n', 'pending_posts.json');\n    fs.mkdirSync(path.dirname(filePath), { recursive: true });\n    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');\n  } catch (e) {\n    // fallback\n  }\n}\n\nfunction normalizePlatform(value) {\n  const platform = String(value || 'both').toLowerCase();\n  if (platform.includes('facebook') && platform.includes('tiktok')) return 'both';\n  if (platform.includes('face')) return 'facebook';\n  if (platform.includes('tik')) return 'tiktok';\n  return platform === 'both' ? 'both' : 'both';\n}\n\nfunction normalizePublishAt(value) {\n  if (!value) return new Date().toISOString();\n  const lower = String(value).trim().toLowerCase();\n  if (['ngay bây giờ', 'ngay bay gio', 'now', 'ngay', 'bây giờ', 'bay gio', 'luôn', 'luon'].includes(lower)) {\n    return new Date().toISOString();\n  }\n  const parsed = Date.parse(value);\n  if (Number.isFinite(parsed)) {\n    return new Date(parsed).toISOString();\n  }\n  return value;\n}\n\nif (intent === 'DUYỆT_BÀI') {\n  let approvalId = params.approval_id || (params.raw_text || '').match(/[A-Z0-9]{8,}/i)?.[0];\n  if (approvalId) {\n    approvalId = approvalId.toUpperCase();\n  }\n  let pending = approvalId ? staticData.pendingPosts[approvalId] : null;\n  let resolvedApprovalId = approvalId;\n\n  if (!pending) {\n    const chatTarget = String(params.chat_id || '');\n    let newestPost = null;\n    let newestId = null;\n    let newestTime = 0;\n\n    for (const [id, post] of Object.entries(staticData.pendingPosts)) {\n      if (String(post.chat_id || '') === chatTarget) {\n        const createdAt = Date.parse(post.created_at || 0);\n        if (Number.isFinite(createdAt) && createdAt > newestTime) {\n          newestTime = createdAt;\n          newestPost = post;\n          newestId = id;\n        }\n      }\n    }\n\n    if (newestPost) {\n      pending = newestPost;\n      resolvedApprovalId = newestId;\n    }\n  }\n\n  if (!pending) {\n    return [{ json: { action: 'error', chat_id: params.chat_id, message: `Không tìm thấy bài chờ duyệt nào ${approvalId ? `với mã ${approvalId}` : 'gần đây'} cho chat này.` } }];\n  }\n\n  delete staticData.pendingPosts[resolvedApprovalId];\n  saveStaticData(staticData);\n  const normalizedPending = { ...pending, publish_at: normalizePublishAt(pending.publish_at) };\n  return [{ json: { ...normalizedPending, action: 'publish', approval_id: resolvedApprovalId, approved_at: new Date().toISOString() } }];\n}\n\nconst approvalId = `SOC${Date.now().toString(36).toUpperCase()}`;\nconst post = {\n  action: 'approval_request',\n  approval_id: approvalId,\n  chat_id: params.chat_id || params.admin_chat_id || $env.ADMIN_TELEGRAM_CHAT_ID,\n  platform: normalizePlatform(params.platform),\n  title: params.title || '',\n  content: params.content || params.caption || params.raw_text || '',\n  caption: params.caption || params.content || params.raw_text || '',\n  image_url: params.image_url || '',\n  video_url: params.video_url || '',\n  photo_file_id: params.photo_file_id || '',\n  video_file_id: params.video_file_id || '',\n  publish_at: normalizePublishAt(params.publish_at),\n  created_at: new Date().toISOString()\n};\n\nstaticData.pendingPosts[approvalId] = { ...post, action: 'publish' };\nsaveStaticData(staticData);\nreturn [{ json: post }];"
+      },
+      "id": "c57039f8-3679-45d3-9914-72225ad85516",
+      "name": "Normalize Social Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.action }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "approval_request",
+              "output": 0
+            },
+            {
+              "value2": "publish",
+              "output": 1
+            },
+            {
+              "value2": "error",
+              "output": 2
+            }
+          ]
+        },
+        "fallbackOutput": 2
+      },
+      "id": "2d2f49f5-9982-4a17-9278-7b47c1f5f2c0",
+      "name": "Switch Social Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "=Bài đăng đã được đưa vào hàng chờ duyệt.\\nMã duyệt: {{ $json.approval_id }}\\nKênh: {{ $json.platform }}\\nLịch đăng: {{ $json.publish_at }}\\n\\nNội dung:\\n{{ $json.caption || $json.content }}\\n\\nGửi: Duyệt bài {{ $json.approval_id }} để xác nhận đăng/lên lịch."
+      },
+      "id": "77cf3437-06f8-4b98-9243-b98342080da3",
+      "name": "Send Approval Request Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        840,
+        120
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id || $env.ADMIN_TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}"
+      },
+      "id": "37ea4b2b-83bc-4ea9-b929-21ed88e73a1b",
+      "name": "Send Social Error Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        840,
+        500
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": "wf06socialpublisherworker",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "sp-call-worker",
+      "name": "Call Publisher Worker",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        840,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nreturn [{\n  json: {\n    ...input,\n    status: \"scheduled_async\",\n    message: \"Bài viết đã được duyệt thành công và đang được tiến hành đăng/lên lịch ngầm.\"\n  }\n}];"
+      },
+      "id": "sp-async-response",
+      "name": "Async Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Social Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Social Command": {
+      "main": [
+        [
+          {
+            "node": "Switch Social Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Social Action": {
+      "main": [
+        [
+          {
+            "node": "Send Approval Request Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Publisher Worker",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Social Error Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Publisher Worker": {
+      "main": [
+        [
+          {
+            "node": "Async Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,503 @@
+{
+  "id": "wf06socialpublisherworker",
+  "name": "06_Social_Publisher_Worker",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough",
+        "returnOutput": "lastRunOnly"
+      },
+      "id": "worker-trigger",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "specificTime",
+        "dateTime": "={{ $json.publish_at || $now.toISO() }}"
+      },
+      "id": "worker-wait",
+      "name": "Wait Until Publish Time",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const post = $input.first().json;\nconst targets = post.platform === 'both' ? ['facebook', 'tiktok'] : [post.platform];\nreturn targets.map(targetPlatform => ({ json: { ...post, targetPlatform } }));"
+      },
+      "id": "worker-expand",
+      "name": "Expand Publish Targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.targetPlatform }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "facebook",
+              "output": 0
+            },
+            {
+              "value2": "tiktok",
+              "output": 1
+            }
+          ]
+        },
+        "fallbackOutput": 0
+      },
+      "id": "worker-switch-target",
+      "name": "Switch Publish Target",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        840,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-media-file-id",
+              "leftValue": "={{ !!$json.video_file_id || !!$json.photo_file_id }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "worker-check-video-file",
+      "name": "Has Media File?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getFile",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ file_id: $json.video_file_id || $json.photo_file_id }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "worker-resolve-video",
+      "name": "Resolve Telegram Media URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge the original post data with the resolved telegram media URL.\n// Input: the httpRequest result has result.file_path.\n// We need the original post to keep fields like caption, content, photo_file_id, etc.\nconst resolveOut = $input.first().json;\nconst post = $node['Switch Publish Target'].json;\nconst tgFilePath = resolveOut && resolveOut.result && resolveOut.result.file_path ? resolveOut.result.file_path : '';\nlet merged = { ...post, targetPlatform: post.targetPlatform };\nconst token = $env.TELEGRAM_BOT_TOKEN || '';\nif (post.video_file_id && !post.video_url) {\n  if (tgFilePath) {\n    merged.video_url = `https://api.telegram.org/file/bot${token}/${tgFilePath}`;\n  }\n}\nif (post.photo_file_id && !post.image_url) {\n  if (tgFilePath) {\n    merged.image_url = `https://api.telegram.org/file/bot${token}/${tgFilePath}`;\n  }\n}\nreturn [{ json: merged }];\n"
+      },
+      "id": "worker-merge-resolve",
+      "name": "Merge Resolve Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const post = $input.first().json;\nconst pageId = $env.FACEBOOK_PAGE_ID || 'me';\nconst message = post.caption || post.content || '';\nlet edge = 'feed';\nconst body = { message };\n\nfunction isValidHttpUrl(value) {\n  if (typeof value !== 'string' || !value) return false;\n  return /^https?:\\/\\//i.test(value);\n}\n\nif (isValidHttpUrl(post.video_url)) {\n  edge = 'videos';\n  body.file_url = post.video_url;\n  body.description = message;\n} else if (isValidHttpUrl(post.image_url)) {\n  edge = 'photos';\n  body.url = post.image_url;\n  body.caption = message;\n}\n\nif (post.publish_at) {\n  const scheduled = Math.floor(Date.parse(post.publish_at) / 1000);\n  if (Number.isFinite(scheduled) && scheduled > Math.floor(Date.now() / 1000) + 600) {\n    body.published = false;\n    body.scheduled_publish_time = scheduled;\n  }\n}\n\nreturn [{ json: { ...post, facebook_url: `https://graph.facebook.com/v19.0/${pageId}/${edge}`, facebook_body: body } }];"
+      },
+      "id": "worker-prepare-fb",
+      "name": "Prepare Facebook Post",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.facebook_url }}",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "={{ $env.FACEBOOK_PAGE_ACCESS_TOKEN || 'CONFIG_FACEBOOK_PAGE_ACCESS_TOKEN' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ $json.facebook_body }}",
+        "options": {},
+        "sendQuery": true,
+        "specifyBody": "json"
+      },
+      "id": "worker-fb-api",
+      "name": "Facebook Scheduled Post API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2040,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const post = $input.first().json;\nif (!post.video_url) {\n  return [{ json: { ...post, _skip_tiktok: true, skip_reason: 'TikTok requires a video_url; no video supplied for this post.' } }];\n}\nreturn [{\n  json: {\n    ...post,\n    tiktok_body: {\n      post_info: {\n        title: post.title || post.caption || 'Video mới',\n        description: post.caption || post.content || '',\n        privacy_level: 'PUBLIC_TO_EVERYONE',\n        disable_duet: false,\n        disable_comment: false,\n        disable_stitch: false,\n        video_cover_timestamp_ms: 1000\n      },\n      source_info: {\n        source: 'PULL_FROM_URL',\n        video_url: post.video_url\n      }\n    }\n  }\n}];\n"
+      },
+      "id": "worker-prepare-tiktok",
+      "name": "Prepare TikTok Direct Post",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-tiktok-video",
+              "leftValue": "={{ !$json._skip_tiktok && !!$json.video_url }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "worker-if-tiktok",
+      "name": "Has TikTok Video?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2040,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        "sendHeaders": true,
+        "headers": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.TIKTOK_ACCESS_TOKEN || 'CONFIG_TIKTOK_ACCESS_TOKEN' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json; charset=UTF-8"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ $json.tiktok_body }}",
+        "options": {},
+        "specifyBody": "json"
+      },
+      "id": "worker-tiktok-api",
+      "name": "TikTok Direct Post API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2280,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
+        "sendHeaders": true,
+        "headers": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.TIKTOK_ACCESS_TOKEN || 'CONFIG_TIKTOK_ACCESS_TOKEN' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json; charset=UTF-8"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={\n  \"publish_id\": \"{{ $json.data.publish_id }}\"\n}",
+        "options": {},
+        "specifyBody": "json"
+      },
+      "id": "worker-tiktok-status",
+      "name": "TikTok Fetch Publish Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2520,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node['When Executed by Another Workflow'].json.chat_id || $env.ADMIN_TELEGRAM_CHAT_ID }}",
+        "text": "=Đã gửi yêu cầu đăng/lên lịch {{ $json.targetPlatform || 'mạng xã hội' }}. Kiểm tra execution log để xem response API chi tiết."
+      },
+      "id": "worker-notify",
+      "name": "Notify Publish Submitted",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        2800,
+        900
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Wait Until Publish Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Until Publish Time": {
+      "main": [
+        [
+          {
+            "node": "Expand Publish Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Publish Targets": {
+      "main": [
+        [
+          {
+            "node": "Switch Publish Target",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Publish Target": {
+      "main": [
+        [
+          {
+            "node": "Has Media File?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Has Media File?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Media File?": {
+      "main": [
+        [
+          {
+            "node": "Resolve Telegram Media URL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Resolve Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Telegram Media URL": {
+      "main": [
+        [
+          {
+            "node": "Merge Resolve Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Resolve Output": {
+      "main": [
+        [
+          {
+            "node": "Prepare Facebook Post",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare TikTok Direct Post",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Prepare Facebook Post": {
+      "main": [
+        [
+          {
+            "node": "Facebook Scheduled Post API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facebook Scheduled Post API": {
+      "main": [
+        [
+          {
+            "node": "Notify Publish Submitted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare TikTok Direct Post": {
+      "main": [
+        [
+          {
+            "node": "Has TikTok Video?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has TikTok Video?": {
+      "main": [
+        [
+          {
+            "node": "TikTok Direct Post API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Publish Submitted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TikTok Direct Post API": {
+      "main": [
+        [
+          {
+            "node": "TikTok Fetch Publish Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TikTok Fetch Publish Status": {
+      "main": [
+        [
+          {
+            "node": "Notify Publish Submitted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,559 @@
+{
+  "id": "wf09videogenerator",
+  "name": "09_Video_Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough",
+        "returnOutput": "lastRunOnly"
+      },
+      "id": "vid-trigger-exec",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "video-generator",
+        "responseMode": "onReceived",
+        "responseCode": 202,
+        "options": {}
+      },
+      "id": "vid-trigger-webhook",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst body = item.body || item;\nconst params = body.params || body;\nconst fileId = params.photo_file_id || params.file_id || body.photo_file_id || body.file_id || '';\nconst caption = params.prompt || params.photo_caption || params.caption || body.prompt || body.photo_caption || body.caption || '';\nconst chatId = params.photo_chat_id || params.chat_id || params.chatId || body.photo_chat_id || body.chat_id || body.chatId || '';\n\nif (!fileId) {\n  throw new Error('Không tìm thấy file_id ảnh sản phẩm. Vui lòng gửi ảnh kèm caption mô tả hoặc reply vào ảnh có sẵn.');\n}\n\nreturn [{\n  json: {\n    file_id: fileId,\n    caption: caption,\n    chat_id: String(chatId),\n    source: params.source || body.source || 'telegram'\n  }\n}];"
+      },
+      "id": "vid-normalize",
+      "name": "Normalize Video Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "=🎬 *Đang tiến hành dựng video AI quảng cáo thời trang...*\n\n⏳ Hệ thống đang gửi yêu cầu tạo video từ ảnh sản phẩm tới mô hình *Google Veo 3.1 Lite*.\n\n⏱️ Quá trình sinh video và xử lý hậu kỳ mất khoảng 1-2 phút, vui lòng chờ trong giây lát...",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "vid-notify",
+      "name": "Send Processing Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        560,
+        340
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getFile?file_id={{ $node['Normalize Video Request'].json.file_id }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "vid-get-file-info",
+      "name": "Get Telegram File Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        800,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.telegram.org/file/bot{{ $env.TELEGRAM_BOT_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "vid-download-photo",
+      "name": "Download Photo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1040,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Read Telegram photo binary via n8n RPC helper, then build the official Veo REST image-to-video body.\nconst request = $node['Normalize Video Request'].json;\nconst chatId = request.chat_id;\nconst caption = request.caption || '';\n\nconst input = $input.first();\nconst binaryKey = Object.keys(input.binary || {})[0] || 'data';\nif (!input.binary?.[binaryKey]) {\n  throw new Error('Không tìm thấy dữ liệu ảnh nhị phân từ Telegram.');\n}\n\nconst buffer = await helpers.getBinaryDataBuffer(0, binaryKey);\nconst photoBase64 = buffer.toString('base64');\nif (!photoBase64 || photoBase64.length < 100) {\n  throw new Error('Ảnh tải từ Telegram rỗng hoặc không hợp lệ.');\n}\n\nlet photoMime = input.binary[binaryKey].mimeType || 'image/jpeg';\nif (photoMime === 'application/octet-stream') {\n  if (photoBase64.startsWith('/9j/')) photoMime = 'image/jpeg';\n  else if (photoBase64.startsWith('iVBOR')) photoMime = 'image/png';\n  else if (photoBase64.startsWith('UklG')) photoMime = 'image/webp';\n  else photoMime = 'image/jpeg';\n}\n\nconst wantsCatwalk = /catwalk|trình diễn|sải bước/i.test(caption);\nconst wantsOrbit = /orbit|xoay|360/i.test(caption);\nconst wantsWindy = /windy|gió|bay/i.test(caption);\nconst wantsLifestyle = /lifestyle|đời thường|phố|café/i.test(caption);\n\nlet cleanCaption = caption.replace(/^🎬\\s*(Dựng video AI|tạo video)\\s*/i, '').trim();\ncleanCaption = cleanCaption.replace(/catwalk|orbit|windy|lifestyle/gi, '').replace(/\\s+/g, ' ').trim();\n\nconst p = [];\np.push('Cinematic high-fashion video advertisement.');\np.push('Use the input clothing product image as the first frame and preserve the exact garment structure, color, print, texture, and fit throughout the video.');\n\nif (wantsCatwalk) {\n  p.push('A gorgeous professional fashion model confidently walks down a bright runway, showcasing the flow, movement, and details of the outfit. Slow zoom out, elegant warm lighting.');\n} else if (wantsOrbit) {\n  p.push('A slow, smooth 360-degree camera orbit around the model standing in a sleek minimalist modern studio, showcasing every side and fit of the garment. Even soft lighting.');\n} else if (wantsWindy) {\n  p.push('A slow-motion medium shot of the model standing while a gentle natural breeze makes the fabric, sleeves, and train sway beautifully, emphasizing light airy texture.');\n} else if (wantsLifestyle) {\n  p.push('The model walks gracefully in a bright modern cafe interior with sunlight through large windows, cozy warm atmosphere, and soft depth-of-field background blur.');\n} else {\n  p.push('A professional model wearing this outfit moves elegantly in a high-end fashion shoot. Slow motion, side-to-side camera pan, warm cinematic lighting, high-fidelity garment details.');\n}\n\nif (cleanCaption && cleanCaption.length > 2) {\n  p.push('Additional user directions: ' + cleanCaption);\n}\n\np.push('Ultra-realistic, 720p, professional color grading. No text, watermark, subtitles, logos, or graphic overlays.');\n\nreturn [{\n  json: {\n    chat_id: chatId,\n    clean_caption: cleanCaption || 'Video quảng cáo thời trang chuyên nghiệp',\n    veo_body: {\n      instances: [{\n        prompt: p.join(' '),\n        image: {\n          bytesBase64Encoded: photoBase64,\n          mimeType: photoMime\n        }\n      }],\n      parameters: {\n        aspectRatio: '9:16',\n        durationSeconds: 8,\n        personGeneration: 'allow_all'\n      }\n    }\n  }\n}];"
+      },
+      "id": "vid-build-prompt",
+      "name": "Build Prompt and Base64",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning?key={{ $env.GEMINI_API_KEY }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.veo_body) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "vid-call-veo",
+      "name": "Call Veo API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1520,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const res = $input.first().json;\nif (!res.name) {\n  throw new Error('API không trả về tên Operation. Lỗi: ' + JSON.stringify(res));\n}\nreturn [{\n  json: {\n    chat_id: $node['Build Prompt and Base64'].json.chat_id,\n    operation_name: res.name,\n    counter: 0,\n    done: false\n  }\n}];"
+      },
+      "id": "vid-init-polling",
+      "name": "Initialize Polling",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "id": "vid-wait",
+      "name": "Wait 15s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/{{ $json.operation_name }}?key={{ $env.GEMINI_API_KEY }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "vid-check-status",
+      "name": "Check Veo Job Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2240,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const res = $input.first().json;\nconst prevState = $node['Wait 15s'] ? $node['Wait 15s'].json : $node['Initialize Polling'].json;\nconst counter = (prevState.counter || 0) + 1;\nconst isDone = res.done === true;\n\nlet videoUri = '';\nlet errorMessage = '';\n\nif (isDone) {\n  if (res.error) {\n    errorMessage = 'Lỗi từ Google Veo: ' + (res.error.message || JSON.stringify(res.error));\n  } else {\n    videoUri = res.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri || '';\n    if (!videoUri) {\n      errorMessage = 'Không tìm thấy URI video trong phản hồi thành công.';\n    }\n  }\n} else if (counter >= 20) {\n  errorMessage = 'Thời gian xử lý video vượt quá giới hạn (5 phút). Vui lòng thử lại sau.';\n}\n\nreturn [{\n  json: {\n    chat_id: prevState.chat_id,\n    operation_name: prevState.operation_name,\n    counter: counter,\n    done: isDone,\n    video_uri: videoUri,\n    error_message: errorMessage\n  }\n}];"
+      },
+      "id": "vid-process-polling",
+      "name": "Process Polling State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2480,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "done-or-err",
+              "leftValue": "={{ $json.done === true || $json.error_message !== \"\" }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "vid-is-done",
+      "name": "Is Done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2720,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "success-check",
+              "leftValue": "={{ $json.error_message === \"\" }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "vid-check-success",
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2960,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Save the freshly generated video URI for this chat so the Telegram Gateway can pick it up\n// when the user says things like 'dang video nay len fanpage' right after the bot returns the video.\nconst item = $input.first().json;\nconst chatId = String(item.chat_id || '');\nconst videoUri = String(item.video_uri || '');\nconst caption = String($node['Build Prompt and Base64']?.json?.clean_caption || '');\nif (!chatId || !videoUri) {\n  return [{ json: { ...item, saved: false } }];\n}\nconst fs = require('fs');\nconst path = require('path');\nconst filePath = path.join($env.N8N_USER_FOLDER || './.n8n', 'recent_videos.json');\nlet store = { videos: {} };\ntry {\n  if (fs.existsSync(filePath)) store = JSON.parse(fs.readFileSync(filePath, 'utf8'));\n} catch (e) { store = { videos: {} }; }\nstore.videos = store.videos || {};\nconst list = store.videos[chatId] || [];\nlist.push({\n  video_uri: videoUri,\n  caption: caption,\n  created_at: new Date().toISOString()\n});\nstore.videos[chatId] = list.slice(-5);\ntry {\n  fs.mkdirSync(path.dirname(filePath), { recursive: true });\n  fs.writeFileSync(filePath, JSON.stringify(store, null, 2), 'utf8');\n} catch (e) { /* fallback to static */ }\nreturn [{ json: { ...item, saved: true, video_uri: videoUri, chat_id: chatId } }];\n"
+      },
+      "id": "vid-save-recent",
+      "name": "Save Recent Video",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $node['Process Polling State'].json.video_uri }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "vid-download-video",
+      "name": "Download Video File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        3360,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "sendVideo",
+        "chatId": "={{ $node['Process Polling State'].json.chat_id }}",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "caption": "={{ '🎬 *Video AI thời trang đã hoàn tất!*\\n\\n💡 Mô hình: Google Veo 3.1 Lite\\n✨ Mẫu chuyển động: ' + $node['Build Prompt and Base64'].json.clean_caption }}",
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "vid-send-video",
+      "name": "Send Video Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        3600,
+        240
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ '❌ *Không thể tạo video thời trang AI*\\n\\nChi tiết: ' + $json.error_message + '\\n\\n💡 Vui lòng điều chỉnh lại ảnh sản phẩm hoặc mô tả và thử lại.' }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "vid-send-error",
+      "name": "Send Error Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        3200,
+        440
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Video Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Video Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Video Request": {
+      "main": [
+        [
+          {
+            "node": "Send Processing Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Processing Notification": {
+      "main": [
+        [
+          {
+            "node": "Get Telegram File Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Telegram File Info": {
+      "main": [
+        [
+          {
+            "node": "Download Photo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Photo": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt and Base64",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt and Base64": {
+      "main": [
+        [
+          {
+            "node": "Call Veo API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Veo API": {
+      "main": [
+        [
+          {
+            "node": "Initialize Polling",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Polling": {
+      "main": [
+        [
+          {
+            "node": "Wait 15s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 15s": {
+      "main": [
+        [
+          {
+            "node": "Check Veo Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Veo Job Status": {
+      "main": [
+        [
+          {
+            "node": "Process Polling State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Polling State": {
+      "main": [
+        [
+          {
+            "node": "Is Done?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Done?": {
+      "main": [
+        [
+          {
+            "node": "Check Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 15s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Success": {
+      "main": [
+        [
+          {
+            "node": "Save Recent Video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Error Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Video File": {
+      "main": [
+        [
+          {
+            "node": "Send Video Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Recent Video": {
+      "main": [
+        [
+          {
+            "node": "Download Video File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

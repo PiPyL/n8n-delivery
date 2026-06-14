@@ -1,0 +1,591 @@
+{
+  "id": "wf11workspaceassistant",
+  "name": "11_Workspace_Assistant",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "wa-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.map(item => {\n  const payload = item.json;\n  const params = payload.params || {};\n  return {\n    json: {\n      chat_id: params.chat_id || payload.chat_id,\n      raw_text: params.raw_text || payload.raw_text || \"\"\n    }\n  };\n});"
+      },
+      "id": "wa-extract-input",
+      "name": "Extract Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  \"contents\": [{\n    \"parts\": [{\n      \"text\": \"Bạn là trợ lý AI chuyên nghiệp phân tích tác vụ văn phòng cho Google Sheets và Google Docs.\\n\\nNhiệm vụ: Phân tích yêu cầu của người dùng, phân loại hành động và soạn dữ liệu thô/văn bản tương ứng để hệ thống tự động hóa thực thi.\\n\\nYêu cầu của người dùng:\\n\\\"\" + $json.raw_text + \"\\\"\\n\\nSpreadsheet ID mặc định đang dùng (nếu cần ghi/đọc): \\\"\" + ($env.GOOGLE_SHEETS_DOCUMENT_ID || 'CONFIG_GOOGLE_SHEETS_DOCUMENT_ID') + \"\\\"\\n\\nHướng dẫn phân loại hành động (action):\\n- READ_SHEET: Khi người dùng muốn tìm kiếm, lọc, kiểm tra tồn kho, xem danh sách, tổng hợp doanh thu từ dữ liệu sẵn có.\\n- CREATE_AND_FORMAT_SHEET: Khi người dùng muốn tạo file bảng tính mới, tạo báo cáo mới có kẻ bảng và lập danh sách dòng cột.\\n- GENERATE_DOC: Khi người dùng muốn lập một văn bản (hợp đồng ngắn, thư chào hàng, bảng báo giá).\\n\\nQuy tắc trả về JSON:\\n1. Đối với READ_SHEET:\\n   - Trả về action = \\\"READ_SHEET\\\"\\n   - Trả về spreadsheet_id (nếu người dùng không cung cấp ID cụ thể, hãy dùng ID mặc định ở trên).\\n   - Trả về sheet_name (tên tab cần đọc, ví dụ: 'KhoHang', 'DonHang', 'KhachHang', 'NhanVien'). Hãy phán đoán tab phù hợp dựa trên ngữ cảnh.\\n   - Trả về query_purpose (mô tả ngắn những gì cần tìm/lọc, ví dụ: 'Tìm tồn kho Laptop Dell', 'Tính tổng doanh thu hôm nay').\\n2. Đối với CREATE_AND_FORMAT_SHEET:\\n   - Trả về action = \\\"CREATE_AND_FORMAT_SHEET\\\"\\n   - Trả về fileName (tên file bảng tính mới, ví dụ: 'Bao_Cao_Doanh_Thu_Ngay_13_06').\\n   - Trả về sheet_name (tab mặc định, ví dụ: 'Báo Cáo').\\n   - Trả về headers: Mảng tiêu đề cột (ví dụ: [\\\"STT\\\", \\\"Tên Sản Phẩm\\\", \\\"Số Lượng\\\", \\\"Giá Bán\\\", \\\"Thành Tiền\\\"]).\\n   - Trả về data: Mảng các object chứa dữ liệu mẫu hoặc dữ liệu trích xuất từ yêu cầu để ghi vào sheet mới.\\n3. Đối với GENERATE_DOC:\\n   - Trả về action = \\\"GENERATE_DOC\\\"\\n   - Trả về doc_title (ví dụ: 'Hop_Dong_Mua_Ban_Laptop_ABC').\\n   - Trả về doc_content: Nội dung đầy đủ của văn bản soạn thảo bằng tiếng Việt chuyên nghiệp, định dạng xuống dòng sạch sẽ. Tự điền đầy đủ các thông tin và điều khoản hợp đồng/thư chào hàng/báo giá dựa trên yêu cầu người dùng.\\n\\nTrả về JSON hợp lệ có cấu trúc chính xác.\"\n    }]\n  }],\n  \"generationConfig\": {\n    \"responseMimeType\": \"application/json\",\n    \"responseSchema\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"action\": {\n          \"type\": \"string\",\n          \"enum\": [\"READ_SHEET\", \"CREATE_AND_FORMAT_SHEET\", \"GENERATE_DOC\"]\n        },\n        \"spreadsheet_id\": { \"type\": \"string\" },\n        \"sheet_name\": { \"type\": \"string\" },\n        \"query_purpose\": { \"type\": \"string\" },\n        \"fileName\": { \"type\": \"string\" },\n        \"headers\": {\n          \"type\": \"array\",\n          \"items\": { \"type\": \"string\" }\n        },\n        \"data\": {\n          \"type\": \"array\",\n          \"items\": { \"type\": \"object\" }\n        },\n        \"doc_title\": { \"type\": \"string\" },\n        \"doc_content\": { \"type\": \"string\" }\n      },\n      \"required\": [\"action\"]\n    }\n  }\n}) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "wa-gemini-brain",
+      "name": "Gemini Workspace Assistant Brain",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        460,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst inputData = $node['Extract Input'].json;\n\nlet parsed = {};\ntry {\n  const text = response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';\n  parsed = JSON.parse(text);\n} catch (e) {\n  parsed = {\n    action: 'CHAT',\n    reply: 'Không thể phân tích dữ liệu phản hồi từ AI.'\n  };\n}\n\nreturn [{\n  json: {\n    chat_id: inputData.chat_id,\n    raw_text: inputData.raw_text,\n    ...parsed\n  }\n}];"
+      },
+      "id": "wa-parse-ai",
+      "name": "Parse AI Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.action }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "READ_SHEET"
+            },
+            {
+              "value2": "CREATE_AND_FORMAT_SHEET",
+              "output": 1
+            },
+            {
+              "value2": "GENERATE_DOC",
+              "output": 2
+            }
+          ]
+        },
+        "fallbackOutput": 0
+      },
+      "id": "wa-switch-action",
+      "name": "Switch Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        820,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $json.spreadsheet_id }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $json.sheet_name }}",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "wa-read-sheet",
+      "name": "Read Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1040,
+        180
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  \"contents\": [{\n    \"parts\": [{\n      \"text\": \"Bạn là trợ lý dữ liệu thông minh.\\n\\nYêu cầu của người dùng: \\\"\" + $node['Parse AI Output'].json.raw_text + \"\\\"\\n\\nMục đích truy vấn: \\\"\" + $node['Parse AI Output'].json.query_purpose + \"\\\"\\n\\nDữ liệu thô đọc được từ Google Sheet (dạng JSON):\\n\" + JSON.stringify($input.all().slice(0, 200).map(i => i.json)) + \"\\n\\nNhiệm vụ: Hãy phân tích dữ liệu trên, lọc/tìm kiếm thông tin chính xác để trả lời trực tiếp câu hỏi của người dùng bằng tiếng Việt thân thiện, rõ ràng. Không nói lặp lại dữ liệu JSON thô, hãy tổng hợp lại một cách dễ đọc nhất.\"\n    }]\n  }]\n}) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "wa-composer",
+      "name": "Gemini Answer Composer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1240,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst parsedOutput = $node['Parse AI Output'].json;\n\nlet text = \"Xin lỗi, tôi gặp sự cố khi tổng hợp dữ liệu.\";\ntry {\n  text = response.candidates?.[0]?.content?.parts?.[0]?.text || text;\n} catch (e) {}\n\nreturn [{\n  json: {\n    chat_id: parsedOutput.chat_id,\n    text: text\n  }\n}];"
+      },
+      "id": "wa-parse-composer",
+      "name": "Parse Composer Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "wa-send-telegram-read",
+      "name": "Send Telegram (Read Sheet)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        180
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "spreadsheet",
+        "title": "={{ $json.fileName }}",
+        "options": {}
+      },
+      "id": "wa-create-sheet",
+      "name": "Create Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1040,
+        340
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $node['Parse AI Output'].json.sheet_name || 'Sheet1' }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": "={{ (() => { const h = $node['Parse AI Output'].json.headers || []; const out = {}; h.forEach(k => { out[k] = '={{ $json[\\'' + k + '\\'] }}'; }); return out; })() }}",
+          "matchingColumns": []
+        },
+        "options": {}
+      },
+      "id": "wa-write-sheet-data",
+      "name": "Write Headers & Data",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1220,
+        340
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const sheetData = $node['Create Google Sheet'].json;\nconst parsedOutput = $node['Parse AI Output'].json;\n\n// Chuẩn bị dữ liệu ghi vào sheet dưới dạng mảng các dòng.\n// Vì Google Sheets node trong n8n hỗ trợ ghi mảng JSON trực tiếp nếu cấu hình append.\nconst rows = [];\n// Hàng 1: Tiêu đề cột\nrows.push(parsedOutput.headers.reduce((acc, h) => { acc[h] = h; return acc; }, {}));\n// Hàng sau: Dữ liệu\nparsedOutput.data.forEach(item => {\n  rows.push(item);\n});\n\nreturn rows.map(r => ({ json: r }));"
+      },
+      "id": "wa-prepare-rows",
+      "name": "Prepare Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1130,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $node['Create Google Sheet'].json.spreadsheetId }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"requests\": [\n    {\n      \"repeatCell\": {\n        \"range\": {\n          \"sheetId\": {{ $items('Create Google Sheet')[0].json.sheets[0].properties.sheetId || 0 }},\n          \"startRowIndex\": 0,\n          \"endRowIndex\": 1,\n          \"startColumnIndex\": 0,\n          \"endColumnIndex\": {{ Math.max(1, ($node['Parse AI Output'].json.headers || []).length) }}\n        },\n        \"cell\": {\n          \"userEnteredFormat\": {\n            \"backgroundColor\": { \"red\": 0.12, \"green\": 0.3, \"blue\": 0.47 },\n            \"textFormat\": { \"bold\": true, \"foregroundColor\": { \"red\": 1.0, \"green\": 1.0, \"blue\": 1.0 } },\n            \"horizontalAlignment\": \"CENTER\"\n          }\n        },\n        \"fields\": \"userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)\"\n      }\n    },\n    {\n      \"updateBorders\": {\n        \"range\": {\n          \"sheetId\": {{ $items('Create Google Sheet')[0].json.sheets[0].properties.sheetId || 0 }},\n          \"startRowIndex\": 0,\n          \"endRowIndex\": 20,\n          \"startColumnIndex\": 0,\n          \"endColumnIndex\": {{ Math.max(1, ($node['Parse AI Output'].json.headers || []).length) }}\n        },\n        \"top\": { \"style\": \"SOLID\", \"width\": 1, \"color\": { \"red\": 0.8, \"green\": 0.8, \"blue\": 0.8 } },\n        \"bottom\": { \"style\": \"SOLID\", \"width\": 1, \"color\": { \"red\": 0.8, \"green\": 0.8, \"blue\": 0.8 } },\n        \"left\": { \"style\": \"SOLID\", \"width\": 1, \"color\": { \"red\": 0.8, \"green\": 0.8, \"blue\": 0.8 } },\n        \"right\": { \"style\": \"SOLID\", \"width\": 1, \"color\": { \"red\": 0.8, \"green\": 0.8, \"blue\": 0.8 } },\n        \"innerHorizontal\": { \"style\": \"SOLID\", \"width\": 1, \"color\": { \"red\": 0.9, \"green\": 0.9, \"blue\": 0.9 } },\n        \"innerVertical\": { \"style\": \"SOLID\", \"width\": 1, \"color\": { \"red\": 0.9, \"green\": 0.9, \"blue\": 0.9 } }\n      }\n    }\n  ]\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "wa-format-sheet",
+      "name": "Format Google Sheet API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1400,
+        340
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node['Parse AI Output'].json.chat_id }}",
+        "text": "=📊 *Đã tạo bảng tính Google Sheets thành công!*\n\n- *Tên file:* `{{ $node['Parse AI Output'].json.fileName }}`\n- *Số lượng cột:* {{ $node['Parse AI Output'].json.headers.length }}\n- *Số dòng dữ liệu:* {{ $node['Parse AI Output'].json.data.length }}\n\n🔗 *Đường dẫn file:* [Xem bảng tính tại đây]({{ $node['Create Google Sheet'].json.spreadsheetUrl }})\n_(Bảng tính đã được tự động kẻ bảng và định dạng tiêu đề)_",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "wa-send-telegram-sheet",
+      "name": "Send Telegram (Create Sheet)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        340
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "title": "={{ $json.doc_title }}",
+        "options": {}
+      },
+      "id": "wa-create-doc",
+      "name": "Create Google Doc",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        560
+      ],
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $json.documentId }}",
+          "mode": "id"
+        },
+        "actionsJson": "=[\n  {\n    \"insertText\": {\n      \"text\": \"{{ $node['Parse AI Output'].json.doc_content.replace(/\\\"/g, '\\\\\\\"').replace(/\\n/g, '\\\\n') }}\",\n      \"location\": {\n        \"index\": 1\n      }\n    }\n  }\n]",
+        "options": {}
+      },
+      "id": "wa-write-doc-content",
+      "name": "Write Doc Content",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        560
+      ],
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node['Parse AI Output'].json.chat_id }}",
+        "text": "=📄 *Đã lập văn bản Google Docs thành công!*\n\n- *Tiêu đề:* `{{ $node['Parse AI Output'].json.doc_title }}`\n- *Loại tài liệu:* AI Tự soạn thảo văn bản\n\n🔗 *Đường dẫn file:* [Xem tài liệu tại đây](https://docs.google.com/document/d/{{ $node['Create Google Doc'].json.documentId }}/edit)\n_(Tài liệu đã được lưu trữ trên Google Drive của bạn)_",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "wa-send-telegram-doc",
+      "name": "Send Telegram (Create Doc)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        560
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $node['Parse AI Output'].json;\nconst fallbackId = $env.GOOGLE_SHEETS_DOCUMENT_ID || '';\nconst spreadsheet_id = (parsed.spreadsheet_id && String(parsed.spreadsheet_id).trim()) || fallbackId;\nlet sheet_name = (parsed.sheet_name && String(parsed.sheet_name).trim()) || 'Sheet1';\nconst t = String(parsed.query_purpose || '').toLowerCase() + ' ' + String(parsed.raw_text || '').toLowerCase();\nif (/kho\\s*hang|ton\\s*kho|hang\\s*ton/.test(t)) sheet_name = 'KhoHang';\nelse if (/doanh\\s*thu|bao\\s*cao/.test(t)) sheet_name = 'BaoCao';\nelse if (/nhan\\s*vien|\\bnv\\b/.test(t)) sheet_name = 'NhanVien';\nelse if (/khach\\s*hang|\\bkh\\b/.test(t)) sheet_name = 'KhachHang';\nelse if (/don\\s*hang|\\bdon\\b/.test(t)) sheet_name = 'DonHang';\nif (!spreadsheet_id) {\n  throw new Error('Missing spreadsheet_id and GOOGLE_SHEETS_DOCUMENT_ID env var is not set.');\n}\nreturn [{ json: { chat_id: parsed.chat_id, raw_text: parsed.raw_text, spreadsheet_id, sheet_name, query_purpose: parsed.query_purpose || '' } }];\n"
+      },
+      "id": "wa-resolve-sheet-refs",
+      "name": "Resolve Sheet Refs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        340
+      ]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Input": {
+      "main": [
+        [
+          {
+            "node": "Gemini Workspace Assistant Brain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Workspace Assistant Brain": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Output": {
+      "main": [
+        [
+          {
+            "node": "Switch Action",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Resolve Sheet Refs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Action": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Create Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Google Doc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Google Sheet": {
+      "main": [
+        [
+          {
+            "node": "Gemini Answer Composer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Answer Composer": {
+      "main": [
+        [
+          {
+            "node": "Parse Composer Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Composer Output": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram (Read Sheet)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Google Sheet": {
+      "main": [
+        [
+          {
+            "node": "Prepare Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Rows": {
+      "main": [
+        [
+          {
+            "node": "Write Headers & Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Headers & Data": {
+      "main": [
+        [
+          {
+            "node": "Format Google Sheet API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Google Sheet API": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram (Create Sheet)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Google Doc": {
+      "main": [
+        [
+          {
+            "node": "Write Doc Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Doc Content": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram (Create Doc)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Sheet Refs": {
+      "main": [
+        [
+          {
+            "node": "Read Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

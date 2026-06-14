@@ -1,0 +1,189 @@
+{
+  "id": "wf15productimagelookup",
+  "name": "15_Product_Image_Lookup",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "wf15-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json || {};\nconst candidates = [input, input.params || {}, input.input || {}, input.data || {}];\nlet userText = '';\nlet chatId = '';\nlet source = 'comment';\n\nfor (const obj of candidates) {\n  if (!obj || typeof obj !== 'object') continue;\n  userText = userText\n    || obj.user_message\n    || obj.text\n    || obj.message\n    || obj.query\n    || obj.content\n    || obj.input\n    || '';\n  chatId = chatId || obj.chat_id || obj.chatId || '';\n  source = obj.source || source;\n}\n\nif (!userText && typeof input === 'string') userText = input;\n\nconst text = String(userText || '').trim();\n\n// Stopwords để tránh match nhầm variation (vd \"không\", \"có\", \"giá\", \"shop\", \"ơi\"...)\nconst STOPWORDS = new Set(['không','khong','có','co','giá','gia','sao','thế','the','nào','nao','ạ','a','đi','di','shop','ad','ơi','oi','mua','order','chốt','chot','đặt','dat','nhé','nhe','nha','với','voi','cho','xin','gửi','gui','ảnh','anh','mẫu','mau','váy','vay','áo','ao','quần','quan','thế','the']);\n\n// Parse SKU (VD01, vd28, vd 5, VD-12) — giữ raw match để detect separator giữa SKU và variation\nconst rawMatch = text.match(/\\b(vd[-\\s_]?\\d{1,3})\\b/i);\nlet sku = '';\nlet variation = '';\nlet queryTerm = '';\n\nif (rawMatch) {\n  const raw = rawMatch[1];\n  sku = raw.toUpperCase().replace(/[-\\s_]/g, '');\n\n  // Tìm variation ngay sau raw SKU: 1+ separator (space/dash/underscore) + word 2-15 ký tự (cho phép VN có dấu)\n  const escaped = raw.replace(/[-\\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');\n  const varRegex = new RegExp(escaped + '[\\\\s\\\\-_]+([a-zA-ZÀ-ỹ]{2,15})', 'i');\n  const varMatch = text.match(varRegex);\n  if (varMatch && varMatch[1]) {\n    const candidate = varMatch[1].toLowerCase();\n    if (!STOPWORDS.has(candidate)) variation = candidate;\n  }\n\n  queryTerm = variation ? `${sku}-${variation}` : sku;\n}\n\nreturn [{\n  json: {\n    user_text: text,\n    chat_id: String(chatId || ''),\n    source: source,\n    sku,\n    variation,\n    query_term: queryTerm,\n    has_sku: !!sku,\n  }\n}];"
+      },
+      "id": "wf15-extract-sku",
+      "name": "Extract SKU & Variation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "sku-check",
+              "leftValue": "={{ $json.has_sku }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "wf15-has-sku",
+      "name": "Has SKU?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        620,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://www.googleapis.com/drive/v3/files",
+        "sendHeaders": true,
+        "headers": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + ($env.GOOGLE_DRIVE_ACCESS_TOKEN || '') }}"
+            }
+          ]
+        },
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "=name contains '{{ $json.query_term }}' and mimeType contains 'image/' and trashed = false and '{{ $env.COMMENT_BOT_DRIVE_FOLDER_ID || 'root' }}' in parents"
+            },
+            {
+              "name": "fields",
+              "value": "files(id,name,mimeType,thumbnailLink,webContentLink)"
+            },
+            {
+              "name": "pageSize",
+              "value": "3"
+            },
+            {
+              "name": "orderBy",
+              "value": "name"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf15-drive-list",
+      "name": "Drive List Images",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        840,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst input = $node[\"Extract SKU & Variation\"].json;\n\n// Defensive: if upstream errored, return empty\nconst allFiles = [];\nfor (const item of items) {\n  const files = item.json && item.json.files;\n  if (Array.isArray(files)) allFiles.push(...files);\n}\n\nconst imageUrls = allFiles.slice(0, 3).map(f => ({\n  id: f.id,\n  name: f.name,\n  url: `https://drive.google.com/uc?id=${f.id}&export=download`,\n  thumb: f.thumbnailLink || `https://drive.google.com/thumbnail?id=${f.id}&sz=w800`,\n  webView: f.webContentLink || `https://drive.google.com/file/d/${f.id}/view`,\n}));\n\nreturn [{\n  json: {\n    sku: input.sku,\n    variation: input.variation,\n    query_term: input.query_term,\n    user_text: input.user_text,\n    chat_id: input.chat_id,\n    source: input.source,\n    found: imageUrls.length > 0,\n    count: imageUrls.length,\n    image_urls: imageUrls,\n    primary_url: imageUrls[0] ? imageUrls[0].url : null,\n  }\n}];"
+      },
+      "id": "wf15-build-urls",
+      "name": "Build Image URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $node[\"Extract SKU & Variation\"].json;\nreturn [{\n  json: {\n    sku: input.sku,\n    variation: input.variation,\n    query_term: input.query_term,\n    user_text: input.user_text,\n    chat_id: input.chat_id,\n    source: input.source,\n    found: false,\n    count: 0,\n    image_urls: [],\n    primary_url: null,\n    reason: 'NO_SKU_DETECTED',\n  }\n}];"
+      },
+      "id": "wf15-no-sku",
+      "name": "No SKU Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        180
+      ]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract SKU & Variation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract SKU & Variation": {
+      "main": [
+        [
+          {
+            "node": "Has SKU?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has SKU?": {
+      "main": [
+        [
+          {
+            "node": "No SKU Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Drive List Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive List Images": {
+      "main": [
+        [
+          {
+            "node": "Build Image URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,783 @@
+{
+  "id": "wf12facebooksmartpublisher",
+  "name": "12_Facebook_Smart_Publisher",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 12_Facebook_Smart_Publisher\nAI Content Studio cho Facebook Fanpage.\n\n**2 mode**: `ai` (Gemini sinh caption) | `manual` (giữ caption user nhập)\n\n**3 nhánh AI**: image / video / text — share chung 1 `Call Gemini 3.1 Flash Lite` (DRY)\n\n**Validation**: file_id guard trước khi download → fail-fast nếu thiếu.\n\n**Approval**: lưu vào `pending_smart_publish.json` với TTL 24h + atomic write. Mã `FSP-XXXXXXXX` dùng `crypto.randomUUID` (collision-free).",
+        "height": 460,
+        "width": 220
+      },
+      "id": "fsp-sticky-intro",
+      "name": "Workflow Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -100,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough",
+        "returnOutput": "lastRunOnly"
+      },
+      "id": "fsp-trigger",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        120,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Smart Publish Request: nhận input từ AI Agent wf01, validate và chuẩn hóa.\nconst item = $input.first().json;\nconst body = item.body || item;\nlet params = body.params || body;\n\n// CASE A: AI tool truyền JSON string trong field 'query' (default của toolWorkflow khi sub-workflow trigger là executeWorkflowTrigger).\n// ToolWorkflowV1 ở @n8n/n8n-nodes-langchain wrap toàn bộ function call args thành { json: { query: '<json string>' } }.\nif (item.query && typeof item.query === 'string') {\n  try { params = JSON.parse(item.query); }\n  catch (e) { return [{ json: { success: false, chat_id: String(item.chat_id || $env.ADMIN_TELEGRAM_CHAT_ID || ''), error_message: 'Query JSON không hợp lệ từ tool call: ' + e.message } }]; }\n}\n// CASE B: body hoặc params có thể là string JSON (khi gọi qua Execute Workflow node).\nif (typeof params === 'string') {\n  try { params = JSON.parse(params); } catch (e) { params = {}; }\n}\nif (typeof body === 'string') {\n  try { body = JSON.parse(body); } catch (e) { body = {}; }\n}\n// CASE C: ToolWorkflow v2 (@n8n/n8n-nodes-langchain.toolWorkflow typeVersion 2) truyền LLM function call args\n// thành các field top-level trực tiếp trên item (vd: item.mode, item.media_kind, item.photo_file_id, ...).\n// Detect: nếu item có bất kỳ field smart-publisher nào ở top-level thì gộp vào params.\nconst toolFields = ['mode', 'media_kind', 'mediaKind', 'photo_file_id', 'photoFileId', 'video_file_id', 'videoFileId', 'user_caption', 'userCaption', 'caption', 'content', 'user_prompt', 'userPrompt', 'topic', 'image_url', 'imageUrl', 'video_url', 'videoUrl', 'chat_id', 'chatId', 'target_page', 'targetPage', 'platform', 'tone', 'language'];\nif (!params || typeof params !== 'object' || Array.isArray(params) || Object.keys(params).length === 0) {\n  const merged = {};\n  let hasToolField = false;\n  for (const f of toolFields) {\n    if (item[f] !== undefined && item[f] !== null && item[f] !== '') {\n      merged[f] = item[f];\n      hasToolField = true;\n    }\n  }\n  if (hasToolField) {\n    params = merged;\n  }\n}\nif (!params || typeof params !== 'object' || Array.isArray(params) || Object.keys(params).length === 0) {\n  params = (body && typeof body === 'object' && !Array.isArray(body)) ? body : {};\n}\n\nconst mode = String(params.mode || 'ai').toLowerCase();\nif (!['ai', 'manual'].includes(mode)) {\n  return [{ json: { success: false, chat_id: params.chat_id || $env.ADMIN_TELEGRAM_CHAT_ID || '', error_message: 'mode không hợp lệ. Chỉ chấp nhận \"ai\" hoặc \"manual\".' } }];\n}\n\nconst mediaKindRaw = String(params.media_kind || params.mediaKind || 'text').toLowerCase();\nlet mediaKind = 'text';\nif (['image', 'photo', 'img', 'picture'].includes(mediaKindRaw)) mediaKind = 'image';\nelse if (['video', 'clip', 'reel', 'mp4'].includes(mediaKindRaw)) mediaKind = 'video';\nelse mediaKind = 'text';\n\nconst photoFileId = String(params.photo_file_id || params.photoFileId || '');\nconst videoFileId = String(params.video_file_id || params.videoFileId || '');\nconst userCaption = String(params.user_caption || params.userCaption || params.caption || params.content || '');\nconst userPrompt = String(params.user_prompt || params.userPrompt || params.topic || userCaption || '');\nconst imageUrl = String(params.image_url || params.imageUrl || '');\nconst videoUrl = String(params.video_url || params.videoUrl || '');\nconst chatId = String(params.chat_id || params.chatId || $env.ADMIN_TELEGRAM_CHAT_ID || '');\nconst targetPage = String(params.target_page || params.targetPage || 'default');\nconst platform = String(params.platform || 'facebook').toLowerCase();\nconst tone = String(params.tone || 'friendly').toLowerCase();\nconst language = String(params.language || 'vi').toLowerCase();\n\n// LENIENT FALLBACK: nếu mode=ai mà thiếu user_prompt, tự generate từ context\nlet effectiveUserPrompt = userPrompt.trim();\nif (mode === 'ai' && !effectiveUserPrompt) {\n  // Fallback 1: dùng user_caption nếu có\n  if (userCaption.trim()) {\n    effectiveUserPrompt = userCaption.trim();\n  }\n  // Fallback 2: dùng media_kind làm prompt\n  else if (mediaKind === 'image' && photoFileId) {\n    effectiveUserPrompt = 'Bài đăng về sản phẩm thời trang trong ảnh';\n  }\n  else if (mediaKind === 'video' && videoFileId) {\n    effectiveUserPrompt = 'Bài đăng về video sản phẩm thời trang';\n  }\n  // Fallback 3: generic\n  else {\n    effectiveUserPrompt = 'Bài đăng fanpage thời trang';\n  }\n}\n\n// Validate: chỉ fail khi cả 2 mode đều không có gì để làm\nif (mode === 'manual' && !userCaption.trim() && !effectiveUserPrompt) {\n  return [{ json: { success: false, chat_id: chatId, error_message: 'Thiếu nội dung caption (user_caption) cho chế độ manual.' } }];\n}\n\n// Validate chat_id\nif (!chatId) {\n  return [{ json: { success: false, chat_id: '', error_message: 'Thiếu chat_id. Hãy truyền chat_id từ $json.chat_id của Telegram trigger.' } }];\n}\n\n// Effective kind fallback\nlet effectiveKind = mediaKind;\nif (mode === 'ai' && mediaKind === 'image' && !photoFileId && !imageUrl) {\n  effectiveKind = 'text';\n}\nif (mode === 'ai' && mediaKind === 'video' && !videoFileId && !videoUrl) {\n  effectiveKind = 'text';\n}\n\nreturn [{\n  json: {\n    success: true,\n    mode,\n    media_kind: mediaKind,\n    effective_kind: effectiveKind,\n    photo_file_id: photoFileId,\n    video_file_id: videoFileId,\n    image_url: imageUrl,\n    video_url: videoUrl,\n    user_caption: userCaption,\n    user_prompt: effectiveUserPrompt,\n    chat_id: chatId,\n    target_page: targetPage,\n    platform,\n    tone,\n    language\n  }\n}];"
+      },
+      "id": "fsp-normalize",
+      "name": "Normalize Smart Publish Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "check-success",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "fsp-if-success",
+      "name": "If Valid Request",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        560,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id || $env.ADMIN_TELEGRAM_CHAT_ID }}",
+        "text": "={{ '❌ *Smart Publisher — Lỗi*\\n\\n' + $json.error_message.replace(/\\\\/g, '\\\\\\\\').replace(/\\\\/g, '\\\\\\\\').replace('_', '\\\\_').replace('*', '\\\\*').replace('[', '\\\\[').replace(']', '\\\\]').replace('(', '\\\\(').replace(')', '\\\\)').replace('~', '\\\\~').replace('`', '\\\\`').replace('>', '\\\\>').replace('#', '\\\\#').replace('+', '\\\\+').replace('-', '\\\\-').replace('=', '\\\\=').replace('|', '\\\\|').replace('{', '\\\\{').replace('}', '\\\\}').replace('.', '\\\\.').replace('!', '\\\\!') }}",
+        "additionalFields": {
+          "parse_mode": "MarkdownV2"
+        }
+      },
+      "id": "fsp-send-error",
+      "name": "Send Error Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        780,
+        540
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.mode + \"|\" + $json.effective_kind }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "ai|image",
+              "output": 0
+            },
+            {
+              "value2": "ai|video",
+              "output": 1
+            },
+            {
+              "value2": "ai|text",
+              "output": 2
+            },
+            {
+              "value2": "manual|image",
+              "output": 3
+            },
+            {
+              "value2": "manual|video",
+              "output": 3
+            },
+            {
+              "value2": "manual|text",
+              "output": 3
+            },
+            {
+              "value2": "manual|",
+              "output": 3
+            }
+          ]
+        },
+        "fallbackOutput": 3
+      },
+      "id": "fsp-switch-mode",
+      "name": "Switch Mode",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-photo-id",
+              "leftValue": "={{ $json.photo_file_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "fsp-if-has-photo",
+      "name": "If Has Photo File Id?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        890,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build error payload when photo_file_id is missing in ai|image mode\nconst norm = $node['Normalize Smart Publish Request'].json || $json;\nreturn [{ json: {\n  success: false,\n  chat_id: norm.chat_id || $env.ADMIN_TELEGRAM_CHAT_ID || '',\n  error_message: 'Thiếu photo_file_id cho mode ai|image. Vui lòng gửi ảnh kèm theo.'\n} }];"
+      },
+      "id": "fsp-build-photo-err",
+      "name": "Build Photo Missing Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        890,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-video-id",
+              "leftValue": "={{ $json.video_file_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "fsp-if-has-video",
+      "name": "If Has Video File Id?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        890,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build error payload when video_file_id is missing in ai|video mode\nconst norm = $node['Normalize Smart Publish Request'].json || $json;\nreturn [{ json: {\n  success: false,\n  chat_id: norm.chat_id || $env.ADMIN_TELEGRAM_CHAT_ID || '',\n  error_message: 'Thiếu video_file_id cho mode ai|video. Vui lòng gửi video kèm theo.'\n} }];"
+      },
+      "id": "fsp-build-video-err",
+      "name": "Build Video Missing Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        890,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getFile?file_id={{ $json.photo_file_id }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "fsp-img-getinfo",
+      "name": "Get Photo File Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1000,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.telegram.org/file/bot{{ $env.TELEGRAM_BOT_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "fsp-img-download",
+      "name": "Download Photo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1220,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Gemini 3.1 Flash Lite Vision request for photo analysis + caption generation\nconst norm = $node['Normalize Smart Publish Request'].json;\nconst chatId = norm.chat_id;\n\n// Resolve binary from previous download\nconst binaryKey = Object.keys($input.first().binary || {})[0] || 'data';\nconst buffer = await this.helpers.getBinaryDataBuffer(0, binaryKey);\nconst photoBase64 = buffer.toString('base64');\n\nlet photoMime = 'image/jpeg';\nif (photoBase64.startsWith('/9j/')) photoMime = 'image/jpeg';\nelse if (photoBase64.startsWith('iVBOR')) photoMime = 'image/png';\nelse if (photoBase64.startsWith('R0lG')) photoMime = 'image/gif';\nelse if (photoBase64.startsWith('UklG')) photoMime = 'image/webp';\n\nif (!photoBase64 || photoBase64.length < 100) {\n  return [{ json: { success: false, chat_id: chatId, error_message: 'Binary ảnh rỗng hoặc không hợp lệ.' } }];\n}\n\nconst toneMap = {\n  friendly: 'thân thiện, gần gũi, dùng nhiều emoji',\n  luxury:   'sang trọng, tinh tế, tối giản emoji',\n  casual:   'trẻ trung, năng động, thoải mái',\n  urgent:   'cấp bách, khuyến mãi, có cảm giác FOMO'\n};\nconst toneDesc = toneMap[norm.tone] || toneMap.friendly;\nconst langMap = { vi: 'tiếng Việt', en: 'tiếng Anh' };\nconst langDesc = langMap[norm.language] || 'tiếng Việt';\n\nconst systemPrompt = `Bạn là copywriter chuyên nghiệp cho fanpage Facebook thời trang Việt Nam.\\n\\n` +\n`Nhiệm vụ: Phân tích hình ảnh sản phẩm được đính kèm và viết caption bằng ${langDesc} phù hợp để đăng lên Facebook Fanpage.\\n\\n` +\n`Yêu cầu:\\n` +\n`- Tone: ${toneDesc}\\n` +\n`- Caption: 2-4 câu, có cảm xúc, có hook mở đầu thu hút\\n` +\n`- Có 1-2 emoji phù hợp (không lạm dụng)\\n` +\n`- 3-6 hashtag liên quan (mix tiếng Việt + tiếng Anh nếu phù hợp)\\n` +\n`- 1 câu call-to-action rõ ràng (CTA)\\n` +\n`${norm.user_prompt ? 'Bối cảnh thêm từ người dùng: ' + norm.user_prompt : ''}\\n\\n` +\n`Trả về JSON hợp lệ theo schema.`;\n\nconst geminiBody = {\n  contents: [{\n    parts: [\n      { text: systemPrompt },\n      { inlineData: { mimeType: photoMime, data: photoBase64 } }\n    ]\n  }],\n  generationConfig: {\n    responseMimeType: 'application/json',\n    responseSchema: {\n      type: 'object',\n      properties: {\n        caption:  { type: 'string', description: 'Caption chính, 2-4 câu' },\n        hashtags: { type: 'array',  items: { type: 'string' } },\n        cta:      { type: 'string', description: 'Call-to-action ngắn' },\n        tone:     { type: 'string', enum: ['friendly', 'luxury', 'casual', 'urgent'] }\n      },\n      required: ['caption', 'hashtags']\n    }\n  }\n};\n\nreturn [{\n  json: {\n    gemini_body: geminiBody,\n    chat_id: chatId,\n    mode: 'ai',\n    media_kind: 'image',\n    photo_file_id: norm.photo_file_id,\n    image_url: norm.image_url,\n    target_page: norm.target_page,\n    platform: norm.platform,\n    source: 'gemini-vision-photo'\n  }\n}];"
+      },
+      "id": "fsp-img-build-gemini",
+      "name": "Build Gemini Vision Body (Image)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getFile?file_id={{ $json.video_file_id }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "fsp-vid-getinfo",
+      "name": "Get Video File Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1000,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.telegram.org/file/bot{{ $env.TELEGRAM_BOT_TOKEN }}/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "fsp-vid-download",
+      "name": "Download Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1220,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Gemini Vision body for VIDEO\nconst norm = $node['Normalize Smart Publish Request'].json;\nconst chatId = norm.chat_id;\n\nconst binaryKey = Object.keys($input.first().binary || {})[0] || 'data';\nconst buffer = await this.helpers.getBinaryDataBuffer(0, binaryKey);\nconst videoBase64 = buffer.toString('base64');\n\n// Guess mime from base64 header (mp4/webm/mov)\nlet videoMime = 'video/mp4';\nif (videoBase64.startsWith('AAAA')) videoMime = 'video/mp4';\nelse if (videoBase64.startsWith('GkX')) videoMime = 'video/webm';\n\nif (!videoBase64 || videoBase64.length < 200) {\n  return [{ json: { success: false, chat_id: chatId, error_message: 'Binary video rỗng.' } }];\n}\n\nconst toneMap = {\n  friendly: 'thân thiện, gần gũi',\n  luxury:   'sang trọng, tinh tế',\n  casual:   'trẻ trung, năng động',\n  urgent:   'cấp bách, FOMO'\n};\nconst toneDesc = toneMap[norm.tone] || toneMap.friendly;\nconst langDesc = norm.language === 'en' ? 'tiếng Anh' : 'tiếng Việt';\n\nconst systemPrompt = `Bạn là copywriter chuyên video ngắn (Reels/TikTok) cho fanpage Facebook thời trang Việt Nam.\\n\\n` +\n`Nhiệm vụ: Phân tích video ngắn được đính kèm và viết caption bằng ${langDesc}.\\n\\n` +\n`Yêu cầu:\\n` +\n`- Tone: ${toneDesc}\\n` +\n`- Caption: 2-3 câu ngắn gọn, mạnh, có hook\\n` +\n`- 3-6 hashtag (mix #Reels #FYP nếu phù hợp)\\n` +\n`- 1 CTA: \"Xem chi tiết\", \"Đặt hàng ngay\"...\\n` +\n`${norm.user_prompt ? 'Bối cảnh: ' + norm.user_prompt : ''}\\n\\n` +\n`Trả về JSON hợp lệ theo schema.`;\n\nconst geminiBody = {\n  contents: [{\n    parts: [\n      { text: systemPrompt },\n      { inlineData: { mimeType: videoMime, data: videoBase64 } }\n    ]\n  }],\n  generationConfig: {\n    responseMimeType: 'application/json',\n    responseSchema: {\n      type: 'object',\n      properties: {\n        caption:  { type: 'string' },\n        hashtags: { type: 'array', items: { type: 'string' } },\n        cta:      { type: 'string' },\n        tone:     { type: 'string', enum: ['friendly', 'luxury', 'casual', 'urgent'] }\n      },\n      required: ['caption', 'hashtags']\n    }\n  }\n};\n\nreturn [{\n  json: {\n    gemini_body: geminiBody,\n    chat_id: chatId,\n    mode: 'ai',\n    media_kind: 'video',\n    video_file_id: norm.video_file_id,\n    video_url: norm.video_url,\n    target_page: norm.target_page,\n    platform: norm.platform,\n    source: 'gemini-vision-video'\n  }\n}];"
+      },
+      "id": "fsp-vid-build-gemini",
+      "name": "Build Gemini Vision Body (Video)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Gemini text-only body for caption generation from topic\nconst norm = $node['Normalize Smart Publish Request'].json;\n\nconst toneMap = {\n  friendly: 'thân thiện, gần gũi, nhiều emoji',\n  luxury:   'sang trọng, tinh tế, tối giản',\n  casual:   'trẻ trung, thoải mái',\n  urgent:   'cấp bách, FOMO, khuyến mãi'\n};\nconst toneDesc = toneMap[norm.tone] || toneMap.friendly;\nconst langDesc = norm.language === 'en' ? 'tiếng Anh' : 'tiếng Việt';\n\nconst systemPrompt = `Bạn là copywriter chuyên nghiệp cho fanpage Facebook thời trang Việt Nam.\\n\\n` +\n`Nhiệm vụ: Viết caption bằng ${langDesc} dựa trên chủ đề/chủ đề người dùng cung cấp.\\n\\n` +\n`Chủ đề: \"${norm.user_prompt}\"\\n\\n` +\n`Yêu cầu:\\n` +\n`- Tone: ${toneDesc}\\n` +\n`- Caption: 2-4 câu, có hook mở đầu\\n` +\n`- 3-6 hashtag liên quan\\n` +\n`- 1 call-to-action rõ ràng\\n\\n` +\n`Trả về JSON hợp lệ theo schema.`;\n\nconst geminiBody = {\n  contents: [{ parts: [{ text: systemPrompt }] }],\n  generationConfig: {\n    responseMimeType: 'application/json',\n    responseSchema: {\n      type: 'object',\n      properties: {\n        caption:  { type: 'string' },\n        hashtags: { type: 'array', items: { type: 'string' } },\n        cta:      { type: 'string' },\n        tone:     { type: 'string', enum: ['friendly', 'luxury', 'casual', 'urgent'] }\n      },\n      required: ['caption', 'hashtags']\n    }\n  }\n};\n\nreturn [{\n  json: {\n    gemini_body: geminiBody,\n    chat_id: norm.chat_id,\n    mode: 'ai',\n    media_kind: 'text',\n    target_page: norm.target_page,\n    platform: norm.platform,\n    user_prompt: norm.user_prompt,\n    source: 'gemini-text'\n  }\n}];"
+      },
+      "id": "fsp-text-build-gemini",
+      "name": "Build Gemini Text Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Manual mode: build preview payload from user_caption directly\nconst norm = $node['Normalize Smart Publish Request'].json;\nconst caption = norm.user_caption.trim();\n\nif (!caption) {\n  return [{ json: { success: false, chat_id: norm.chat_id, error_message: 'Caption trống ở mode manual.' }}];\n}\n\nreturn [{ json: {\n  success: true,\n  chat_id: norm.chat_id,\n  mode: 'manual',\n  media_kind: norm.media_kind,\n  effective_kind: norm.effective_kind,\n  caption: caption,\n  raw_caption: caption,\n  hashtags: [],\n  cta: '',\n  photo_file_id: norm.photo_file_id,\n  video_file_id: norm.video_file_id,\n  image_url: norm.image_url,\n  video_url: norm.video_url,\n  target_page: norm.target_page,\n  platform: norm.platform,\n  source: 'manual'\n}}];"
+      },
+      "id": "fsp-manual-build",
+      "name": "Build Manual Preview Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.gemini_body) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "fsp-call-gemini",
+      "name": "Call Gemini 3.1 Flash Lite",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1660,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Unified Gemini response parser - handles all 3 modes (image/video/text) the same way\nconst req = $node['Call Gemini 3.1 Flash Lite'].json;\nconst reqBody = $input.first().json;\nconst builder = $('Build Gemini Vision Body (Image), Build Gemini Vision Body (Video), Build Gemini Text Body').first()?.json || req;\n\ntry {\n  const res = $input.first().json;\n  const firstCandidate = res.candidates?.[0];\n  const finishReason = firstCandidate?.finishReason || firstCandidate?.finish_reason;\n\n  if (finishReason === 'SAFETY') {\n    return [{ json: {\n      success: false,\n      chat_id: (builder && builder.chat_id) || '',\n      error_message: '⚠️ Gemini từ chối phân tích do bộ lọc an toàn. Vui lòng dùng ảnh/video khác hoặc chuyển sang mode manual.'\n    }}];\n  }\n\n  const textPart = firstCandidate?.content?.parts?.find(p => p.text);\n  const rawText = textPart?.text || '';\n  if (!rawText) {\n    return [{ json: {\n      success: false,\n      chat_id: (builder && builder.chat_id) || '',\n      error_message: 'Gemini không trả về nội dung.'\n    }}];\n  }\n\n  let parsed;\n  try { parsed = JSON.parse(rawText); }\n  catch {\n    parsed = { caption: rawText, hashtags: [], cta: '' };\n  }\n\n  const caption = (parsed.caption || '').trim();\n  const hashtags = Array.isArray(parsed.hashtags) ? parsed.hashtags : [];\n  const cta = (parsed.cta || '').trim();\n  const tone = parsed.tone || 'friendly';\n\n  const fullCaption = [caption, hashtags.length ? '\\n\\n' + hashtags.map(h => h.startsWith('#') ? h : '#' + h).join(' ') : '', cta ? '\\n\\n👉 ' + cta : ''].join('').trim();\n\n  if (!caption) {\n    return [{ json: {\n      success: false,\n      chat_id: (builder && builder.chat_id) || '',\n      error_message: 'Caption rỗng sau khi parse Gemini.'\n    }}];\n  }\n\n  return [{ json: {\n    success: true,\n    chat_id: (builder && builder.chat_id) || '',\n    mode: 'ai',\n    media_kind: (builder && builder.media_kind) || 'text',\n    caption: fullCaption,\n    raw_caption: caption,\n    hashtags,\n    cta,\n    tone,\n    photo_file_id: (builder && builder.photo_file_id) || '',\n    video_file_id: (builder && builder.video_file_id) || '',\n    image_url: (builder && builder.image_url) || '',\n    video_url: (builder && builder.video_url) || '',\n    target_page: (builder && builder.target_page) || 'default',\n    platform: (builder && builder.platform) || 'facebook',\n    source: (builder && builder.source) || 'ai-vision'\n  }}];\n} catch (err) {\n  return [{ json: {\n    success: false,\n    chat_id: (builder && builder.chat_id) || '',\n    error_message: 'Lỗi parse Gemini response: ' + (err.message || String(err))\n  }}];\n}\n"
+      },
+      "id": "fsp-parse-gemini",
+      "name": "Parse Gemini Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build preview message and approval_id, persist to static data\n// Fix: atomic write (no race condition) + TTL 24h + dedup-safe UUID\nconst payload = $input.first().json;\n\n// Nhánh lỗi: không tạo approval_id, trả về payload error\nif (payload.success === false) {\n  return [{ json: { ...payload, _branch: 'error' } }];\n}\n\nconst chatId = String(payload.chat_id || $env.ADMIN_TELEGRAM_CHAT_ID || '');\nconst mediaKind = payload.media_kind || payload.effective_kind || 'text';\n\n// FIX 3: Use crypto.randomUUID for collision-free ID (instead of Date.now which can collide on concurrent calls)\nlet approvalId;\ntry {\n  const crypto = require('crypto');\n  approvalId = 'FSP-' + crypto.randomUUID().slice(0, 8).toUpperCase();\n} catch (e) {\n  // Fallback if crypto unavailable\n  approvalId = 'FSP-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();\n}\n\nlet fs = null, path = null;\ntry { fs = require('fs'); path = require('path'); } catch (e) {}\n\nconst filePath = path ? path.join($env.N8N_USER_FOLDER || './.n8n', 'pending_smart_publish.json') : null;\nconst now = Date.now();\nconst TTL_MS = 24 * 60 * 60 * 1000; // 24 hours\n\n// Load or init store, prune expired\nlet store = { pendingApprovals: {} };\nif (filePath && fs && fs.existsSync(filePath)) {\n  try {\n    store = JSON.parse(fs.readFileSync(filePath, 'utf8'));\n    store.pendingApprovals = store.pendingApprovals || {};\n    // FIX 7: Prune expired approvals to prevent file bloat\n    for (const [id, rec] of Object.entries(store.pendingApprovals)) {\n      if (rec.expiry_at && new Date(rec.expiry_at).getTime() < now) {\n        delete store.pendingApprovals[id];\n      }\n    }\n  } catch (e) {\n    // Corrupt file - start fresh, keep old as backup\n    try { fs.writeFileSync(filePath + '.corrupt.' + now, fs.readFileSync(filePath, 'utf8')); } catch (e2) {}\n    store = { pendingApprovals: {} };\n  }\n}\n\nconst expiryAt = new Date(now + TTL_MS).toISOString();\n\n// Store full payload for later use by 06_Social_Publisher\nstore.pendingApprovals[approvalId] = {\n  ...payload,\n  approval_id: approvalId,\n  chat_id: chatId,           // FIX: explicit ownership field for cross-check\n  media_kind: mediaKind,\n  created_at: new Date(now).toISOString(),\n  expiry_at: expiryAt\n};\n\n// FIX 4: Atomic write - write to .tmp then rename to prevent partial reads\nif (filePath && fs) {\n  try {\n    fs.mkdirSync(path.dirname(filePath), { recursive: true });\n    const tmpPath = filePath + '.tmp';\n    fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2), 'utf8');\n    fs.renameSync(tmpPath, filePath);\n  } catch (e) {\n    // Last-resort: log but don't fail the workflow\n    // (preview will still be sent; approval is best-effort persistence)\n  }\n}\n\nreturn [{ json: {\n  ...payload,\n  approval_id: approvalId,\n  chat_id: chatId,\n  media_kind: mediaKind,\n  expiry_at: expiryAt,\n  _branch: 'success'\n} }];\n"
+      },
+      "id": "fsp-store-approval",
+      "name": "Store Approval & Build Preview",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ '\\n📝 *PREVIEW BÀI ĐĂNG FACEBOOK*' + '\\n' + '━━━━━━━━━━━━━━━' + '\\n' + '🆔 Mã: `' + $json.approval_id + '`\\n' + '🎨 Mode: ' + ($json.mode || 'manual') + '\\n' + '📎 Media: ' + ($json.media_kind || 'text') + '\\n\\n' + '✍️ *Nội dung:*\\n' + ($json.caption || '(rỗng)') + '\\n\\n' + '━━━━━━━━━━━━━━━' + '\\n' + '✅ Gửi: `Duyệt bài ' + $json.approval_id + '` để đăng ngay\\n' + '✏️ Gửi: `Sửa bài ' + $json.approval_id + ' [feedback]` để AI viết lại' }}"
+      },
+      "id": "fsp-send-preview",
+      "name": "Send Preview Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        2320,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "is-success",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "fsp-is-success",
+      "name": "Is Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Smart Publish Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Smart Publish Request": {
+      "main": [
+        [
+          {
+            "node": "If Valid Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Valid Request": {
+      "main": [
+        [
+          {
+            "node": "Switch Mode",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Error Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Mode": {
+      "main": [
+        [
+          {
+            "node": "If Has Photo File Id?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If Has Video File Id?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Gemini Text Body",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Manual Preview Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Manual Preview Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Has Photo File Id?": {
+      "main": [
+        [
+          {
+            "node": "Get Photo File Info",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Photo Missing Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Has Video File Id?": {
+      "main": [
+        [
+          {
+            "node": "Get Video File Info",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Video Missing Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Photo File Info": {
+      "main": [
+        [
+          {
+            "node": "Download Photo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Photo": {
+      "main": [
+        [
+          {
+            "node": "Build Gemini Vision Body (Image)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Gemini Vision Body (Image)": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini 3.1 Flash Lite",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gemini 3.1 Flash Lite": {
+      "main": [
+        [
+          {
+            "node": "Parse Gemini Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Video File Info": {
+      "main": [
+        [
+          {
+            "node": "Download Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Video": {
+      "main": [
+        [
+          {
+            "node": "Build Gemini Vision Body (Video)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Gemini Vision Body (Video)": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini 3.1 Flash Lite",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Gemini Text Body": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini 3.1 Flash Lite",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Manual Preview Payload": {
+      "main": [
+        [
+          {
+            "node": "Store Approval & Build Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Gemini Response": {
+      "main": [
+        [
+          {
+            "node": "Store Approval & Build Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Photo Missing Error": {
+      "main": [
+        [
+          {
+            "node": "Store Approval & Build Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Video Missing Error": {
+      "main": [
+        [
+          {
+            "node": "Store Approval & Build Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Approval & Build Preview": {
+      "main": [
+        [
+          {
+            "node": "Is Success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Success?": {
+      "main": [
+        [
+          {
+            "node": "Send Preview Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Error Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "facebook",
+      "id": "tag-fb"
+    },
+    {
+      "name": "ai",
+      "id": "tag-ai"
+    },
+    {
+      "name": "approval",
+      "id": "tag-approval"
+    },
+    {
+      "name": "telegram",
+      "id": "tag-tg"
+    }
+  ],
+  "updatedAt": "2026-06-14T12:54:15.692Z"
+}
