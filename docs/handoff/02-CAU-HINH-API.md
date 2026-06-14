@@ -19,7 +19,6 @@ Tài liệu này hướng dẫn **lấy từng API key** cần thiết cho hệ 
 | TikTok | Refresh Token | `TIKTOK_REFRESH_TOKEN` | ⭐⭐⭐ Khó | Cần app review cho public |
 | Google | OAuth2 (Sheets/Drive/Calendar/Gmail) | (qua UI n8n) | ⭐⭐ TB | Free |
 | Google Drive | Folder ID | `COMMENT_BOT_DRIVE_FOLDER_ID` | ⭐ Dễ | Free |
-| Google Drive | Access Token | `GOOGLE_DRIVE_ACCESS_TOKEN` | ⭐⭐ TB | Free |
 | Google Sheets | Document ID | `GOOGLE_SHEETS_DOCUMENT_ID` | ⭐ Dễ | Free |
 
 ---
@@ -119,8 +118,16 @@ curl "https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange
 - Hoặc: `https://graph.facebook.com/v18.0/me?access_token=TOKEN` → `id`
 
 ### Bước 5: Đặt Webhook
+> [!NOTE]
+> **Yêu cầu cài đặt `cloudflared` (Cloudflare Tunnel CLI) nếu chạy local:**
+> *   **macOS:** `brew install cloudflared`
+> *   **Linux:** `sudo apt-get install cloudflared`
+> *   **Windows:** Tải file `cloudflared.exe` từ trang chủ Cloudflare và cấu hình biến PATH.
+>
+> Kiểm tra bằng lệnh: `cloudflared --version`
+
 1. **App Dashboard** → **Webhooks** → **Edit Subscription**
-2. **Callback URL:** URL webhook Workflow 02 (sẽ có sau khi `npm run n8n:start`)
+2. **Callback URL:** URL webhook Workflow 02 (sẽ có sau khi chạy `npm run n8n:start:cloudflare`)
    - Vd local: `https://<cloudflare-tunnel>.trycloudflare.com/webhook/facebook`
 3. **Verify Token:** tự đặt chuỗi bất kỳ, vd: `my_secret_verify_2026`
 4. **Subscription Fields:** `messages`, `messaging_postbacks`, `feed` (cho comment), `comments`
@@ -171,8 +178,8 @@ Hệ thống dùng cho: Workflow 05 (refresh token), 06, 06-Worker (direct post 
 TIKTOK_CLIENT_KEY=aw1234567890abcdef
 TIKTOK_CLIENT_SECRET=abc123def456
 TIKTOK_REFRESH_TOKEN=rft.1234567890...
-TIKTOK_ACCESS_TOKEN=act.1234567890...  (sẽ được refresh tự động bởi WF05)
 ```
+*(Lưu ý: Không cần thiết lập biến TIKTOK_ACCESS_TOKEN tĩnh trong file env nữa vì hệ thống đã chuyển sang sử dụng token được lưu trữ động trong Google Sheet)*
 
 ---
 
@@ -270,22 +277,16 @@ CommentBotImages/                          ← COMMENT_BOT_DRIVE_FOLDER_ID
 - **General access:** "Anyone with the link" → **Viewer**
 - Copy link → lấy Folder ID từ URL
 
-### Bước 3: Lấy Access Token
-- Workflow 15 dùng **HTTP Request** với Bearer Token thay vì Google Drive node
-- Tạo service account hoặc dùng OAuth2 access token:
-  ```bash
-  # Cách nhanh nhất: dùng OAuth2 token từ n8n credentials
-  # Hoặc tạo service account JSON, download, share folder với service account email
+### Bước 3: Cấu hình Folder ID
+- Copy Folder ID vừa lấy được (chuỗi ký tự ở cuối URL thư mục trên Drive).
+- Paste vào `.env.local`:
   ```
-- Paste access token vào `GOOGLE_DRIVE_ACCESS_TOKEN` (lưu ý: token này có hạn ~1h, cần refresh)
+  COMMENT_BOT_DRIVE_FOLDER_ID=1AbCdEfGhIjKlMnOpQrStUvWxYz
+  ```
 
-> 💡 **Best practice:** Nên dùng **Google Drive OAuth2** credential trong n8n thay vì hardcode token. Workflow 15 hiện tại dùng HTTP Request thuần vì cần query string động. Có thể refactor để dùng credential.
-
-### Paste vào .env.local
-```
-COMMENT_BOT_DRIVE_FOLDER_ID=1AbCdEfGhIjKlMnOpQrStUvWxYz
-GOOGLE_DRIVE_ACCESS_TOKEN=ya29.a0AfH6SMB...
-```
+> [!NOTE]
+> **Không cần sử dụng `GOOGLE_DRIVE_ACCESS_TOKEN`:**
+> Workflow 15 đã được cập nhật để sử dụng trực tiếp Google Drive OAuth2 API Credential của n8n (được tạo ở Bước 5 mục 5 phía trên) để truy xuất ảnh sản phẩm, đảm bảo hệ thống tự động làm mới token và hoạt động liên tục 24/7 mà không cần cập nhật token thủ công qua `.env.local`.
 
 ---
 

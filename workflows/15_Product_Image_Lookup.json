@@ -62,15 +62,8 @@
       "parameters": {
         "method": "GET",
         "url": "=https://www.googleapis.com/drive/v3/files",
-        "sendHeaders": true,
-        "headers": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + ($env.GOOGLE_DRIVE_ACCESS_TOKEN || '') }}"
-            }
-          ]
-        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
         "queryParameters": {
           "parameters": [
             {
@@ -100,7 +93,13 @@
       "position": [
         840,
         420
-      ]
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
     },
     {
       "parameters": {

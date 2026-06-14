@@ -135,7 +135,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Merge the original post data with the resolved telegram media URL.\n// Input: the httpRequest result has result.file_path.\n// We need the original post to keep fields like caption, content, photo_file_id, etc.\nconst resolveOut = $input.first().json;\nconst post = $node['Switch Publish Target'].json;\nconst tgFilePath = resolveOut && resolveOut.result && resolveOut.result.file_path ? resolveOut.result.file_path : '';\nlet merged = { ...post, targetPlatform: post.targetPlatform };\nconst token = $env.TELEGRAM_BOT_TOKEN || '';\nif (post.video_file_id && !post.video_url) {\n  if (tgFilePath) {\n    merged.video_url = `https://api.telegram.org/file/bot${token}/${tgFilePath}`;\n  }\n}\nif (post.photo_file_id && !post.image_url) {\n  if (tgFilePath) {\n    merged.image_url = `https://api.telegram.org/file/bot${token}/${tgFilePath}`;\n  }\n}\nreturn [{ json: merged }];\n"
+        "jsCode": "// Merge the original post data with the resolved telegram media URL.\n// We need the original post to keep fields like caption, content, photo_file_id, etc.\nconst resolveOut = $input.first().json;\nconst isTikTok = resolveOut.targetPlatform === 'tiktok';\nconst post = isTikTok ? $node['Merge Token & Post'].json : $node['Filter Facebook'].json;\nconst tgFilePath = resolveOut && resolveOut.result && resolveOut.result.file_path ? resolveOut.result.file_path : '';\nlet merged = { ...post, targetPlatform: post.targetPlatform };\nconst token = $env.TELEGRAM_BOT_TOKEN || '';\nif (post.video_file_id && !post.video_url) {\n  if (tgFilePath) {\n    merged.video_url = `https://api.telegram.org/file/bot${token}/${tgFilePath}`;\n  }\n}\nif (post.photo_file_id && !post.image_url) {\n  if (tgFilePath) {\n    merged.image_url = `https://api.telegram.org/file/bot${token}/${tgFilePath}`;\n  }\n}\nreturn [{ json: merged }];\n"
       },
       "id": "worker-merge-resolve",
       "name": "Merge Resolve Output",
@@ -155,8 +155,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1800,
-        480
+        2000,
+        380
       ]
     },
     {
@@ -185,8 +185,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
       "position": [
-        2040,
-        480
+        2200,
+        380
       ]
     },
     {
@@ -198,8 +198,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1800,
-        800
+        2400,
+        680
       ]
     },
     {
@@ -232,8 +232,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        2040,
-        800
+        2600,
+        680
       ]
     },
     {
@@ -245,7 +245,7 @@
           "parameters": [
             {
               "name": "Authorization",
-              "value": "=Bearer {{ $env.TIKTOK_ACCESS_TOKEN || 'CONFIG_TIKTOK_ACCESS_TOKEN' }}"
+              "value": "=Bearer {{ $json.tiktok_access_token }}"
             },
             {
               "name": "Content-Type",
@@ -266,8 +266,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
       "position": [
-        2280,
-        720
+        2800,
+        600
       ]
     },
     {
@@ -279,7 +279,7 @@
           "parameters": [
             {
               "name": "Authorization",
-              "value": "=Bearer {{ $env.TIKTOK_ACCESS_TOKEN || 'CONFIG_TIKTOK_ACCESS_TOKEN' }}"
+              "value": "=Bearer {{ $json.tiktok_access_token }}"
             },
             {
               "name": "Content-Type",
@@ -300,8 +300,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
       "position": [
-        2520,
-        720
+        3000,
+        600
       ]
     },
     {
@@ -314,8 +314,8 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1,
       "position": [
-        2800,
-        900
+        3300,
+        780
       ],
       "credentials": {
         "telegramApi": {
@@ -323,6 +323,102 @@
           "name": ""
         }
       }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.filter(item => item.json.targetPlatform === 'facebook');"
+      },
+      "id": "worker-filter-fb",
+      "name": "Filter Facebook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.filter(item => item.json.targetPlatform === 'tiktok');"
+      },
+      "id": "worker-filter-tiktok",
+      "name": "Filter TikTok",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID || 'CONFIG_GOOGLE_SHEETS_DOCUMENT_ID' }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $env.GOOGLE_TOKENS_SHEET_NAME || 'Tokens' }}"
+        },
+        "options": {}
+      },
+      "id": "worker-read-tiktok-token",
+      "name": "Read TikTok Token",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        2000,
+        680
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": null,
+          "name": ""
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(item => item.json);\nconst tiktokRow = rows.find(r => r.Key === 'tiktok_credentials') || {};\nconst token = tiktokRow.AccessToken || '';\n\nconst post = $node['Filter TikTok'].json;\nreturn [{ json: { ...post, tiktok_access_token: token } }];"
+      },
+      "id": "worker-merge-token",
+      "name": "Merge Token & Post",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.targetPlatform }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "facebook",
+              "output": 0
+            },
+            {
+              "value2": "tiktok",
+              "output": 1
+            }
+          ]
+        },
+        "fallbackOutput": 0
+      },
+      "id": "worker-switch-after-resolve",
+      "name": "Switch Target After Resolve",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        240
+      ]
     }
   ],
   "connections": {
@@ -359,24 +455,6 @@
         ]
       ]
     },
-    "Switch Publish Target": {
-      "main": [
-        [
-          {
-            "node": "Has Media File?",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Has Media File?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Has Media File?": {
       "main": [
         [
@@ -402,22 +480,6 @@
             "node": "Merge Resolve Output",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "Merge Resolve Output": {
-      "main": [
-        [
-          {
-            "node": "Prepare Facebook Post",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Prepare TikTok Direct Post",
-            "type": "main",
-            "index": 1
           }
         ]
       ]
@@ -489,6 +551,97 @@
         [
           {
             "node": "Notify Publish Submitted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Publish Target": {
+      "main": [
+        [
+          {
+            "node": "Filter Facebook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Filter TikTok",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Facebook": {
+      "main": [
+        [
+          {
+            "node": "Has Media File?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter TikTok": {
+      "main": [
+        [
+          {
+            "node": "Read TikTok Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read TikTok Token": {
+      "main": [
+        [
+          {
+            "node": "Merge Token & Post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Token & Post": {
+      "main": [
+        [
+          {
+            "node": "Has Media File?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Resolve Output": {
+      "main": [
+        [
+          {
+            "node": "Switch Target After Resolve",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Target After Resolve": {
+      "main": [
+        [
+          {
+            "node": "Prepare Facebook Post",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare TikTok Direct Post",
             "type": "main",
             "index": 0
           }
